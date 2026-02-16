@@ -89,18 +89,57 @@ def find_camera_region(img, debug=False):
     x, y, cw, ch = best_rect
 
     debug_print(debug, f"Selected rectangle: ({x},{y},{cw},{ch})")
+    
+    cropped = img[y:y+ch, x:x+cw]
+    cropped_gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
 
-    trim_x = int(cw * 0.02)
-    trim_y = int(ch * 0.02)
+    debug_print(debug, "Starting adaptive edge cleanup...")
 
-    debug_print(debug, f"Applying trim: {trim_x}px horizontal, {trim_y}px vertical")
+    def trim_edges(gray_img, debug=False):
+        h, w = gray_img.shape
 
-    cropped = img[
-        y + trim_y : y + ch - trim_y,
-        x + trim_x : x + cw - trim_x
-    ]
+        top = 0
+        bottom = h - 1
+        left = 0
+        right = w - 1
 
-    debug_print(debug, f"Cropped region size: {cropped.shape[1]}x{cropped.shape[0]}")
+        # Helper: row is mostly black?
+        def row_is_bad(row):
+            return np.mean(row) < 15 or np.std(row) < 5
+
+        # Helper: column is mostly black?
+        def col_is_bad(col):
+            return np.mean(col) < 15 or np.std(col) < 5
+
+        # Trim top
+        while top < bottom and row_is_bad(gray_img[top, :]):
+            debug_print(debug, f"Trimming top row {top}")
+            top += 1
+
+        # Trim bottom
+        while bottom > top and row_is_bad(gray_img[bottom, :]):
+            debug_print(debug, f"Trimming bottom row {bottom}")
+            bottom -= 1
+
+        # Trim left
+        while left < right and col_is_bad(gray_img[:, left]):
+            debug_print(debug, f"Trimming left col {left}")
+            left += 1
+
+        # Trim right
+        while right > left and col_is_bad(gray_img[:, right]):
+            debug_print(debug, f"Trimming right col {right}")
+            right -= 1
+
+        debug_print(debug, f"Final trimmed box: top={top}, bottom={bottom}, left={left}, right={right}")
+
+        return top, bottom, left, right
+
+    t, b, l, r = trim_edges(cropped_gray, debug=debug)
+
+    cropped = cropped[t:b+1, l:r+1]
+
+    debug_print(debug, f"Cropped region size after cleanup: {cropped.shape[1]}x{cropped.shape[0]}")
 
     return cropped
 
