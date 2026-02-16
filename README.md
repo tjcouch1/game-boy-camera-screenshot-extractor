@@ -35,8 +35,12 @@ Drag and drop an image onto the script file, or run the script as follows:
 python gbcam_extract.py screenshot1.png screenshot2.png
 ```
 
-For example, to run with the sample images provided in `sample-screenshots`, run the following:
+The following command-line arguments are supported:
+
+- `--debug` - outputs information about the process of transforming the image
+
+For example, to run with the sample images provided in `sample-screenshots` with debug logging, run the following:
 
 ```bash
-python gbcam_extract.py "sample-screenshots/Screenshot 2025-02-22 21-04-01.png" "sample-screenshots/Screenshot 2025-02-22 21-03-26.png" "sample-screenshots/Screenshot 2025-02-22 21-03-34.png" "sample-screenshots/Screenshot 2025-02-22 21-03-43.png" "sample-screenshots/Screenshot 2025-02-24 07-51-02.png"
+python gbcam_extract.py --debug "sample-screenshots/Screenshot 2025-02-22 21-04-01.png" "sample-screenshots/Screenshot 2025-02-22 21-03-26.png" "sample-screenshots/Screenshot 2025-02-22 21-03-34.png" "sample-screenshots/Screenshot 2025-02-22 21-03-43.png" "sample-screenshots/Screenshot 2025-02-24 07-51-02.png"
 ```

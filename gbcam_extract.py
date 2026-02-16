@@ -2,6 +2,7 @@
 
 import sys
 import os
+import argparse
 import numpy as np
 import cv2
 from PIL import Image
@@ -9,83 +10,106 @@ from PIL import Image
 TARGET_W = 128
 TARGET_H = 112
 
-def find_camera_region(img):
-    """
-    Detect the actual Game Boy Camera image inside the gray bordered frame.
-    Uses aspect ratio filtering and contour hierarchy.
-    """
 
+def debug_print(debug, *args):
+    if debug:
+        print("[DEBUG]", *args)
+
+
+def find_camera_region(img, debug=False):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
     h, w = gray.shape
     center = np.array([w // 2, h // 2])
 
-    # Step 1: Remove very dark background
-    _, mask = cv2.threshold(gray, 25, 255, cv2.THRESH_BINARY)
+    debug_print(debug, f"Input image size: {w}x{h}")
 
-    # Clean small noise
+    # Threshold to remove black outer region
+    threshold_value = 25
+    _, mask = cv2.threshold(gray, threshold_value, 255, cv2.THRESH_BINARY)
+
+    debug_print(debug, f"Threshold value used: {threshold_value}")
+    debug_print(debug, f"Nonzero mask pixels: {np.count_nonzero(mask)}")
+
+    # Morphological close
     kernel = np.ones((5, 5), np.uint8)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
 
-    # Step 2: Find contours with hierarchy (important!)
     contours, hierarchy = cv2.findContours(
         mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
     )
 
-    if contours is None:
+    if contours is None or len(contours) == 0:
         raise ValueError("No contours detected.")
+
+    debug_print(debug, f"Total contours found: {len(contours)}")
+
+    TARGET_RATIO = 128 / 112
+    debug_print(debug, f"Target aspect ratio: {TARGET_RATIO:.4f}")
 
     best_rect = None
     best_score = None
 
-    TARGET_RATIO = 128 / 112
-
-    for cnt in contours:
+    for i, cnt in enumerate(contours):
         x, y, cw, ch = cv2.boundingRect(cnt)
 
         if cw < w * 0.15 or ch < h * 0.15:
-            continue  # too small
+            debug_print(debug, f"Contour {i}: Rejected (too small) {cw}x{ch}")
+            continue
 
         aspect = cw / ch
         aspect_error = abs(aspect - TARGET_RATIO)
 
-        if aspect_error > 0.2:
-            continue  # reject shapes far from 128x112 ratio
-
         rect_center = np.array([x + cw // 2, y + ch // 2])
         center_dist = np.linalg.norm(rect_center - center)
 
-        # Score favors:
-        # - correct aspect ratio
-        # - closeness to center
         score = aspect_error * 500 + center_dist
+
+        debug_print(
+            debug,
+            f"Contour {i}:",
+            f"Rect=({x},{y},{cw},{ch})",
+            f"Aspect={aspect:.4f}",
+            f"AspectError={aspect_error:.4f}",
+            f"CenterDist={center_dist:.2f}",
+            f"Score={score:.2f}"
+        )
+
+        if aspect_error > 0.25:
+            debug_print(debug, f"Contour {i}: Rejected (aspect mismatch)")
+            continue
 
         if best_score is None or score < best_score:
             best_score = score
             best_rect = (x, y, cw, ch)
+            debug_print(debug, f"Contour {i}: NEW BEST")
 
     if best_rect is None:
         raise ValueError("Could not isolate Game Boy Camera image region.")
 
     x, y, cw, ch = best_rect
 
-    # Small inward trim to avoid gray border bleed
+    debug_print(debug, f"Selected rectangle: ({x},{y},{cw},{ch})")
+
     trim_x = int(cw * 0.02)
     trim_y = int(ch * 0.02)
 
-    return img[
+    debug_print(debug, f"Applying trim: {trim_x}px horizontal, {trim_y}px vertical")
+
+    cropped = img[
         y + trim_y : y + ch - trim_y,
         x + trim_x : x + cw - trim_x
     ]
 
+    debug_print(debug, f"Cropped region size: {cropped.shape[1]}x{cropped.shape[0]}")
 
-def average_downscale(img, target_w, target_h):
-    """
-    Downscale by averaging pixel blocks.
-    """
+    return cropped
+
+
+def average_downscale(img, target_w, target_h, debug=False):
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-
     src_h, src_w = gray.shape
+
+    debug_print(debug, f"Downscaling from {src_w}x{src_h} to {target_w}x{target_h}")
 
     result = np.zeros((target_h, target_w), dtype=np.float32)
 
@@ -99,15 +123,15 @@ def average_downscale(img, target_w, target_h):
             block = gray[y0:y1, x0:x1]
             result[ty, tx] = np.mean(block)
 
+    debug_print(debug, f"Downscale complete.")
+
     return result
 
 
-def quantize_2bit(img):
-    """
-    Convert grayscale image to 4 evenly spaced brightness levels.
-    """
-    # Compute thresholds based on quartiles for better matching
+def quantize_2bit(img, debug=False):
     thresholds = np.percentile(img, [25, 50, 75])
+
+    debug_print(debug, f"Quantization thresholds: {thresholds}")
 
     out = np.zeros_like(img)
 
@@ -119,7 +143,7 @@ def quantize_2bit(img):
     return out.astype(np.uint8)
 
 
-def process_file(path):
+def process_file(path, debug=False):
     print(f"Processing: {path}")
 
     img = cv2.imread(path)
@@ -127,9 +151,9 @@ def process_file(path):
         print(f"Skipping (could not load): {path}")
         return
 
-    camera_region = find_camera_region(img)
-    downscaled = average_downscale(camera_region, TARGET_W, TARGET_H)
-    quantized = quantize_2bit(downscaled)
+    camera_region = find_camera_region(img, debug=debug)
+    downscaled = average_downscale(camera_region, TARGET_W, TARGET_H, debug=debug)
+    quantized = quantize_2bit(downscaled, debug=debug)
 
     output_img = Image.fromarray(quantized, mode='L')
 
@@ -141,12 +165,14 @@ def process_file(path):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Drag image(s) onto this script or pass file paths as arguments.")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Extract Game Boy Camera image from screenshot.")
+    parser.add_argument("files", nargs="+", help="Input image files")
+    parser.add_argument("--debug", action="store_true", help="Enable verbose debug output")
 
-    for path in sys.argv[1:]:
-        process_file(path)
+    args = parser.parse_args()
+
+    for path in args.files:
+        process_file(path, debug=args.debug)
 
 
 if __name__ == "__main__":
