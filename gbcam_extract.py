@@ -11,45 +11,72 @@ TARGET_H = 112
 
 def find_camera_region(img):
     """
-    Detect the non-black rectangle approximately centered in the image.
-    Assumes the border around it is mostly black.
+    Detect the actual Game Boy Camera image inside the gray bordered frame.
+    Uses aspect ratio filtering and contour hierarchy.
     """
+
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
 
-    # Threshold to separate black border from content
-    _, thresh = cv2.threshold(gray, 20, 255, cv2.THRESH_BINARY)
-
-    # Find contours of bright regions
-    contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-
-    if not contours:
-        raise ValueError("Could not detect camera image region.")
-
-    # Choose the contour closest to center and reasonably large
     h, w = gray.shape
     center = np.array([w // 2, h // 2])
+
+    # Step 1: Remove very dark background
+    _, mask = cv2.threshold(gray, 25, 255, cv2.THRESH_BINARY)
+
+    # Clean small noise
+    kernel = np.ones((5, 5), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+
+    # Step 2: Find contours with hierarchy (important!)
+    contours, hierarchy = cv2.findContours(
+        mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    if contours is None:
+        raise ValueError("No contours detected.")
 
     best_rect = None
     best_score = None
 
+    TARGET_RATIO = 128 / 112
+
     for cnt in contours:
         x, y, cw, ch = cv2.boundingRect(cnt)
 
-        if cw < w * 0.2 or ch < h * 0.2:
+        if cw < w * 0.15 or ch < h * 0.15:
             continue  # too small
 
-        rect_center = np.array([x + cw // 2, y + ch // 2])
-        dist = np.linalg.norm(rect_center - center)
+        aspect = cw / ch
+        aspect_error = abs(aspect - TARGET_RATIO)
 
-        if best_score is None or dist < best_score:
-            best_score = dist
+        if aspect_error > 0.2:
+            continue  # reject shapes far from 128x112 ratio
+
+        rect_center = np.array([x + cw // 2, y + ch // 2])
+        center_dist = np.linalg.norm(rect_center - center)
+
+        # Score favors:
+        # - correct aspect ratio
+        # - closeness to center
+        score = aspect_error * 500 + center_dist
+
+        if best_score is None or score < best_score:
+            best_score = score
             best_rect = (x, y, cw, ch)
 
     if best_rect is None:
-        raise ValueError("No suitable camera rectangle found.")
+        raise ValueError("Could not isolate Game Boy Camera image region.")
 
     x, y, cw, ch = best_rect
-    return img[y:y+ch, x:x+cw]
+
+    # Small inward trim to avoid gray border bleed
+    trim_x = int(cw * 0.02)
+    trim_y = int(ch * 0.02)
+
+    return img[
+        y + trim_y : y + ch - trim_y,
+        x + trim_x : x + cw - trim_x
+    ]
 
 
 def average_downscale(img, target_w, target_h):
