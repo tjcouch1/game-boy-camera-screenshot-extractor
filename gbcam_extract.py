@@ -93,53 +93,49 @@ def find_camera_region(img, debug=False):
     cropped = img[y:y+ch, x:x+cw]
     cropped_gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
 
-    debug_print(debug, "Starting adaptive edge cleanup...")
+    debug_print(debug, "Refining crop using texture energy...")
 
-    def trim_edges(gray_img, debug=False):
-        h, w = gray_img.shape
+    # Compute gradient magnitude (Sobel)
+    sobelx = cv2.Sobel(cropped_gray, cv2.CV_32F, 1, 0, ksize=3)
+    sobely = cv2.Sobel(cropped_gray, cv2.CV_32F, 0, 1, ksize=3)
+    gradient_mag = np.sqrt(sobelx**2 + sobely**2)
 
-        top = 0
-        bottom = h - 1
-        left = 0
-        right = w - 1
+    # Compute row and column texture energy
+    row_energy = np.mean(gradient_mag, axis=1)
+    col_energy = np.mean(gradient_mag, axis=0)
 
-        # Helper: row is mostly black?
-        def row_is_bad(row):
-            return np.mean(row) < 15 or np.std(row) < 5
+    debug_print(debug, f"Row energy min/max: {row_energy.min()} / {row_energy.max()}")
+    debug_print(debug, f"Col energy min/max: {col_energy.min()} / {col_energy.max()}")
 
-        # Helper: column is mostly black?
-        def col_is_bad(col):
-            return np.mean(col) < 15 or np.std(col) < 5
+    # Determine threshold relative to max energy
+    row_thresh = row_energy.max() * 0.25
+    col_thresh = col_energy.max() * 0.25
 
-        # Trim top
-        while top < bottom and row_is_bad(gray_img[top, :]):
-            debug_print(debug, f"Trimming top row {top}")
-            top += 1
+    # Find top edge
+    top = 0
+    while top < len(row_energy) and row_energy[top] < row_thresh:
+        top += 1
 
-        # Trim bottom
-        while bottom > top and row_is_bad(gray_img[bottom, :]):
-            debug_print(debug, f"Trimming bottom row {bottom}")
-            bottom -= 1
+    # Find bottom edge
+    bottom = len(row_energy) - 1
+    while bottom > top and row_energy[bottom] < row_thresh:
+        bottom -= 1
 
-        # Trim left
-        while left < right and col_is_bad(gray_img[:, left]):
-            debug_print(debug, f"Trimming left col {left}")
-            left += 1
+    # Find left edge
+    left = 0
+    while left < len(col_energy) and col_energy[left] < col_thresh:
+        left += 1
 
-        # Trim right
-        while right > left and col_is_bad(gray_img[:, right]):
-            debug_print(debug, f"Trimming right col {right}")
-            right -= 1
+    # Find right edge
+    right = len(col_energy) - 1
+    while right > left and col_energy[right] < col_thresh:
+        right -= 1
 
-        debug_print(debug, f"Final trimmed box: top={top}, bottom={bottom}, left={left}, right={right}")
+    debug_print(debug, f"Texture crop box: top={top}, bottom={bottom}, left={left}, right={right}")
 
-        return top, bottom, left, right
+    cropped = cropped[top:bottom+1, left:right+1]
 
-    t, b, l, r = trim_edges(cropped_gray, debug=debug)
-
-    cropped = cropped[t:b+1, l:r+1]
-
-    debug_print(debug, f"Cropped region size after cleanup: {cropped.shape[1]}x{cropped.shape[0]}")
+    debug_print(debug, f"Final cropped size: {cropped.shape[1]}x{cropped.shape[0]}")
 
     return cropped
 
