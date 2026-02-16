@@ -93,45 +93,71 @@ def find_camera_region(img, debug=False):
     cropped = img[y:y+ch, x:x+cw]
     cropped_gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
 
-    debug_print(debug, "Refining crop using texture energy...")
+    debug_print(debug, "Refining crop using frame color detection...")
 
-    # Compute gradient magnitude (Sobel)
-    sobelx = cv2.Sobel(cropped_gray, cv2.CV_32F, 1, 0, ksize=3)
-    sobely = cv2.Sobel(cropped_gray, cv2.CV_32F, 0, 1, ksize=3)
-    gradient_mag = np.sqrt(sobelx**2 + sobely**2)
+    h, w = cropped_gray.shape
 
-    # Compute row and column texture energy
-    row_energy = np.mean(gradient_mag, axis=1)
-    col_energy = np.mean(gradient_mag, axis=0)
+    # --- Step 1: Estimate frame gray color ---
+    # Sample a 5-pixel border around the outside
+    sample_strip = np.concatenate([
+        cropped_gray[0:5, :].flatten(),
+        cropped_gray[h-5:h, :].flatten(),
+        cropped_gray[:, 0:5].flatten(),
+        cropped_gray[:, w-5:w].flatten()
+    ])
 
-    debug_print(debug, f"Row energy min/max: {row_energy.min()} / {row_energy.max()}")
-    debug_print(debug, f"Col energy min/max: {col_energy.min()} / {col_energy.max()}")
+    frame_gray = np.median(sample_strip)
+    debug_print(debug, f"Estimated frame gray level: {frame_gray}")
 
-    # Determine threshold relative to max energy
-    row_thresh = row_energy.max() * 0.25
-    col_thresh = col_energy.max() * 0.25
+    # Pixel considered frame if close to frame gray
+    FRAME_TOL = 18
 
-    # Find top edge
+    def is_frame_pixel(val):
+        return abs(int(val) - int(frame_gray)) < FRAME_TOL
+
+    def row_frame_fraction(row):
+        return np.mean([is_frame_pixel(v) for v in row])
+
+    def col_frame_fraction(col):
+        return np.mean([is_frame_pixel(v) for v in col])
+
+    # --- Step 2: Trim top ---
     top = 0
-    while top < len(row_energy) and row_energy[top] < row_thresh:
+    while top < h:
+        frac = row_frame_fraction(cropped_gray[top])
+        debug_print(debug, f"Top row {top} frame fraction: {frac:.3f}")
+        if frac < 0.6:  # less than 60% frame → real image
+            break
         top += 1
 
-    # Find bottom edge
-    bottom = len(row_energy) - 1
-    while bottom > top and row_energy[bottom] < row_thresh:
+    # --- Step 3: Trim bottom ---
+    bottom = h - 1
+    while bottom > top:
+        frac = row_frame_fraction(cropped_gray[bottom])
+        debug_print(debug, f"Bottom row {bottom} frame fraction: {frac:.3f}")
+        if frac < 0.6:
+            break
         bottom -= 1
 
-    # Find left edge
+    # --- Step 4: Trim left ---
     left = 0
-    while left < len(col_energy) and col_energy[left] < col_thresh:
+    while left < w:
+        frac = col_frame_fraction(cropped_gray[:, left])
+        debug_print(debug, f"Left col {left} frame fraction: {frac:.3f}")
+        if frac < 0.6:
+            break
         left += 1
 
-    # Find right edge
-    right = len(col_energy) - 1
-    while right > left and col_energy[right] < col_thresh:
+    # --- Step 5: Trim right ---
+    right = w - 1
+    while right > left:
+        frac = col_frame_fraction(cropped_gray[:, right])
+        debug_print(debug, f"Right col {right} frame fraction: {frac:.3f}")
+        if frac < 0.6:
+            break
         right -= 1
 
-    debug_print(debug, f"Texture crop box: top={top}, bottom={bottom}, left={left}, right={right}")
+    debug_print(debug, f"Final frame-trim box: top={top}, bottom={bottom}, left={left}, right={right}")
 
     cropped = cropped[top:bottom+1, left:right+1]
 
