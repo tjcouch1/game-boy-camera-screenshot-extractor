@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from "react";
 import { flushSync } from "react-dom";
 import type { PipelineResult, GBImageData } from "gbcam-extract";
 import { processPicture } from "gbcam-extract";
+import type { FrameSelection } from "../types/frame-selection.js";
 import {
   serializePipelineResult,
   deserializePipelineResult,
@@ -12,6 +13,8 @@ export interface ProcessingResult {
   result: PipelineResult;
   filename: string;
   processingTime: number;
+  /** Per-image frame override. Undefined = follow global default. */
+  frameOverride?: FrameSelection;
 }
 
 export interface CurrentImageProgress {

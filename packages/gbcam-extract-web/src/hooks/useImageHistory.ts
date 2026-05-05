@@ -6,12 +6,7 @@ import {
   isSerializedPipelineResult,
 } from "../utils/serialization.js";
 import { useLocalStorage } from "./useLocalStorage.js";
-
-export interface ProcessingResult {
-  result: PipelineResult;
-  filename: string;
-  processingTime: number;
-}
+import type { ProcessingResult } from "./useProcessing.js";
 
 export interface ImageHistoryBatch {
   id: string;
