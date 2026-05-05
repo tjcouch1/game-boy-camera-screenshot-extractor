@@ -25,10 +25,10 @@ export function dedupeFrames(frames: Frame[]): Frame[] {
 
 /** FNV-1a 32-bit on a byte stream — fast and good enough for exact dedup. */
 function fnv1a(bytes: Uint8ClampedArray): string {
-  let h = 0x811c9dc5;
+  let h = 0x811c9dc5; // FNV-1a 32-bit offset basis
   for (let i = 0; i < bytes.length; i++) {
     h ^= bytes[i];
-    h = Math.imul(h, 0x01000193);
+    h = Math.imul(h, 0x01000193); // FNV-1a 32-bit prime
   }
   // Convert to unsigned hex.
   return (h >>> 0).toString(16);
