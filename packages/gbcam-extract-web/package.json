@@ -12,14 +12,15 @@
   "type": "module",
   "scripts": {
     "build:instructions": "node scripts/generate-instructions.ts",
-    "dev": "pnpm build:instructions && vite",
-    "dev:host": "pnpm build:instructions && vite --host",
-    "build": "pnpm build:instructions && tsc -b && vite build",
-    "preview": "pnpm build:instructions && vite preview",
-    "preview:host": "pnpm build:instructions && vite preview --host",
+    "build:frames": "node scripts/copy-frames.ts",
+    "dev": "pnpm build:instructions && pnpm build:frames && vite",
+    "dev:host": "pnpm build:instructions && pnpm build:frames && vite --host",
+    "build": "pnpm build:instructions && pnpm build:frames && tsc -b && vite build",
+    "preview": "pnpm build:instructions && pnpm build:frames && vite preview",
+    "preview:host": "pnpm build:instructions && pnpm build:frames && vite preview --host",
     "serve": "node scripts/serve-dist.ts",
     "typecheck": "tsc --noEmit",
-    "postinstall": "node scripts/generate-instructions.ts && node scripts/generate-licenses.ts"
+    "postinstall": "node scripts/generate-instructions.ts && node scripts/generate-licenses.ts && node scripts/copy-frames.ts"
   },
   "dependencies": {
     "@base-ui/react": "^1.4.1",

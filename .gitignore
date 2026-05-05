@@ -276,3 +276,7 @@ packages/gbcam-extract-web/public/instructions-assets
 # Generated skills - npx skills add shadcn/ui
 skills-lock.json
 .claude/skills/shadcn
+
+# Frame sheets copied into web/public and the generated manifest
+packages/gbcam-extract-web/public/frames
+packages/gbcam-extract-web/src/generated/FrameSheets.ts
