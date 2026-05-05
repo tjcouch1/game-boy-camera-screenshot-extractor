@@ -148,8 +148,13 @@ export default function App() {
     settings.defaultFrame ?? FRAME_SELECTION_NONE;
 
   function setDefaultFrame(next: FrameSelection) {
-    // Global default may not itself be "default".
-    if (next.kind === "default") return;
+    // The "Default" tile is hidden in mode="default" pickers, so the global
+    // default itself can never be `kind: "default"`. Warn loudly if a future
+    // caller breaks that invariant rather than silently dropping the change.
+    if (next.kind === "default") {
+      console.warn("setDefaultFrame received kind=default; ignoring");
+      return;
+    }
     updateSetting("defaultFrame", next);
   }
 
@@ -350,6 +355,17 @@ export default function App() {
           </Alert>
         )}
 
+        {catalog.status === "error" && (
+          <Alert variant="destructive" className="mb-6">
+            <AlertTriangle />
+            <AlertTitle>Failed to load frame sheets</AlertTitle>
+            <AlertDescription>
+              {catalog.error ?? "Frames will not be available."} You can still
+              process and download images without frames.
+            </AlertDescription>
+          </Alert>
+        )}
+
         {status === "ready" && (
           <>
             <FieldGroup className="mb-6 flex-row flex-wrap items-center gap-4">
@@ -512,6 +528,7 @@ export default function App() {
                         onFrameOverrideChange={(next) => setResultFrameOverride(r.filename, next)}
                         effectiveFrame={resolveEffective(r.frameOverride ?? FRAME_SELECTION_DEFAULT)}
                         defaultFrameLabel={defaultFrameLabel}
+                        framePickerDisabled={catalog.status !== "ready"}
                         onDelete={() => handleDeleteResult(r.filename)}
                       />
                       {(r.result.intermediates || r.result.debug) && (
@@ -644,6 +661,7 @@ export default function App() {
                                 }
                                 effectiveFrame={resolveEffective(result.frameOverride ?? FRAME_SELECTION_DEFAULT)}
                                 defaultFrameLabel={defaultFrameLabel}
+                                framePickerDisabled={catalog.status !== "ready"}
                                 onDelete={() =>
                                   deleteFromHistory(batch.id, idx)
                                 }

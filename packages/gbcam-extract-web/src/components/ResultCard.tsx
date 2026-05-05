@@ -38,6 +38,8 @@ interface ResultCardProps {
   effectiveFrame: Frame | null;
   /** Display label for the "Default — …" picker tile. */
   defaultFrameLabel: string;
+  /** Disable the FramePicker (e.g. while the catalog is still loading). */
+  framePickerDisabled?: boolean;
   onDelete?: () => void;
 }
 
@@ -54,6 +56,7 @@ export function ResultCard({
   onFrameOverrideChange,
   effectiveFrame,
   defaultFrameLabel,
+  framePickerDisabled,
   onDelete,
 }: ResultCardProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -197,6 +200,7 @@ export function ResultCard({
             frames={frames}
             mode="result"
             defaultFrameLabel={defaultFrameLabel}
+            disabled={framePickerDisabled}
           />
         </div>
         <canvas
