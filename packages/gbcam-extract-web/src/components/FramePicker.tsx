@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Frame } from "gbcam-extract";
 import { composeFrame, applyPalette } from "gbcam-extract";
 import {
@@ -120,8 +120,17 @@ export function FramePicker({
   const normals = useMemo(() => frames.filter((f) => f.type === "normal"), [frames]);
   const wilds = useMemo(() => frames.filter((f) => f.type === "wild"), [frames]);
 
+  const [open, setOpen] = useState(false);
+  const select = useCallback(
+    (next: FrameSelection) => {
+      onChange(next);
+      setOpen(false);
+    },
+    [onChange],
+  );
+
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger
         render={
           <Button variant="secondary" disabled={disabled} className="gap-2">
@@ -151,7 +160,7 @@ export function FramePicker({
             <FrameTile
               label={`Default${defaultFrameLabel ? ` — ${defaultFrameLabel}` : ""}`}
               selected={value.kind === "default"}
-              onClick={() => onChange({ kind: "default" })}
+              onClick={() => select({ kind: "default" })}
               palette={palette}
               frame={null}
               previewW={160}
@@ -161,7 +170,7 @@ export function FramePicker({
           <FrameTile
             label="No frame"
             selected={value.kind === "none"}
-            onClick={() => onChange({ kind: "none" })}
+            onClick={() => select({ kind: "none" })}
             palette={palette}
             frame={null}
             previewW={160}
@@ -177,7 +186,7 @@ export function FramePicker({
                   key={f.id}
                   label={frameDisplayName(f)}
                   selected={value.kind === "frame" && value.id === f.id}
-                  onClick={() => onChange({ kind: "frame", id: f.id })}
+                  onClick={() => select({ kind: "frame", id: f.id })}
                   palette={palette}
                   frame={f}
                   previewW={160}
@@ -196,7 +205,7 @@ export function FramePicker({
                   key={f.id}
                   label={frameDisplayName(f)}
                   selected={value.kind === "frame" && value.id === f.id}
-                  onClick={() => onChange({ kind: "frame", id: f.id })}
+                  onClick={() => select({ kind: "frame", id: f.id })}
                   palette={palette}
                   frame={f}
                   previewW={f.width}
