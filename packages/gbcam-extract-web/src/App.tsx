@@ -1,15 +1,23 @@
 import { useState, useCallback, useEffect } from "react";
-import type { PipelineResult } from "gbcam-extract";
+import type { Frame } from "gbcam-extract";
 import { useOpenCV } from "./hooks/useOpenCV.js";
 import { useImageHistory } from "./hooks/useImageHistory.js";
+import { useFrameCatalog } from "./hooks/useFrameCatalog.js";
 import { ImageInput } from "./components/ImageInput.js";
 import { useProcessing } from "./hooks/useProcessing.js";
 import type { ProcessingProgress } from "./hooks/useProcessing.js";
 import { ResultCard } from "./components/ResultCard.js";
+import { FramePicker } from "./components/FramePicker.js";
 import { PalettePicker } from "./components/PalettePicker.js";
 import { PipelineDebugViewer } from "./components/PipelineDebugViewer.js";
 import { sanitizePaletteName } from "./utils/filenames.js";
+import { buildOutputCanvas } from "./utils/buildOutputCanvas.js";
 import type { PaletteEntry } from "./data/palettes.js";
+import {
+  type FrameSelection,
+  FRAME_SELECTION_DEFAULT,
+  FRAME_SELECTION_NONE,
+} from "./types/frame-selection.js";
 import { CollapsibleInstructions } from "./components/CollapsibleInstructions.js";
 import { USER_INSTRUCTIONS_MARKDOWN } from "./generated/UserInstructions.js";
 import { useAppSettings } from "./hooks/useAppSettings.js";
@@ -123,6 +131,7 @@ export default function App() {
     deleteAllHistory,
     updateSettings: updateHistorySettings,
     settings: historySettings,
+    updateFrameOverride: updateHistoryFrameOverride,
   } = useImageHistory();
   const { settings, updateSetting } = useAppSettings();
   const debug = settings.debug;
@@ -133,6 +142,41 @@ export default function App() {
     name: "Down",
     colors: ["#FFFFA5", "#FF9494", "#9494FF", "#000000"],
   };
+
+  const catalog = useFrameCatalog();
+  const defaultFrame: FrameSelection =
+    settings.defaultFrame ?? FRAME_SELECTION_NONE;
+
+  function setDefaultFrame(next: FrameSelection) {
+    // Global default may not itself be "default".
+    if (next.kind === "default") return;
+    updateSetting("defaultFrame", next);
+  }
+
+  function frameLabelFor(selection: FrameSelection): string {
+    if (selection.kind === "none") return "No frame";
+    if (selection.kind === "default") return "Default";
+    const f = catalog.getFrameById(selection.id);
+    return f ? `${f.sheetStem} — ${f.type} #${f.index}` : selection.id;
+  }
+
+  function resolveEffective(override: FrameSelection): Frame | null {
+    const effective = override.kind === "default" ? defaultFrame : override;
+    if (effective.kind === "frame") {
+      return catalog.getFrameById(effective.id) ?? null;
+    }
+    return null;
+  }
+
+  const defaultFrameLabel = frameLabelFor(defaultFrame);
+
+  function setResultFrameOverride(filename: string, next: FrameSelection) {
+    setCurrentResults((prev) =>
+      prev.map((r) =>
+        r.filename === filename ? { ...r, frameOverride: next } : r,
+      ),
+    );
+  }
 
   const setDebug = (value: boolean) => updateSetting("debug", value);
   const setClipboardEnabled = (value: boolean) =>
@@ -364,13 +408,21 @@ export default function App() {
                     <Button
                       onClick={() => {
                         results.forEach((r) => {
-                          downloadResult(
-                            r.filename,
+                          const override = r.frameOverride ?? FRAME_SELECTION_DEFAULT;
+                          const effective = resolveEffective(override);
+                          const canvas = buildOutputCanvas(
                             r.result,
                             paletteEntry.colors,
-                            paletteEntry.name,
+                            effective,
                             outputScale,
                           );
+                          if (!canvas) return;
+                          const baseName = r.filename.replace(/\.[^.]+$/, "");
+                          const sanitizedPaletteName = sanitizePaletteName(paletteEntry.name);
+                          const link = document.createElement("a");
+                          link.download = `${baseName}_${sanitizedPaletteName}_gb.png`;
+                          link.href = canvas.toDataURL("image/png");
+                          link.click();
                         });
                       }}
                     >
@@ -431,6 +483,17 @@ export default function App() {
                       </SelectContent>
                     </Select>
                   </Field>
+                  <Field orientation="horizontal" className="w-auto gap-2">
+                    <FieldLabel>Default Frame:</FieldLabel>
+                    <FramePicker
+                      value={defaultFrame}
+                      onChange={setDefaultFrame}
+                      palette={paletteEntry.colors}
+                      frames={catalog.frames}
+                      mode="default"
+                      disabled={catalog.status !== "ready"}
+                    />
+                  </Field>
                 </div>
 
                 <div className="grid gap-4">
@@ -444,6 +507,11 @@ export default function App() {
                         paletteName={paletteEntry.name}
                         outputScale={outputScale}
                         previewScale={previewScale}
+                        frames={catalog.frames}
+                        frameOverride={r.frameOverride ?? FRAME_SELECTION_DEFAULT}
+                        onFrameOverrideChange={(next) => setResultFrameOverride(r.filename, next)}
+                        effectiveFrame={resolveEffective(r.frameOverride ?? FRAME_SELECTION_DEFAULT)}
+                        defaultFrameLabel={defaultFrameLabel}
                         onDelete={() => handleDeleteResult(r.filename)}
                       />
                       {(r.result.intermediates || r.result.debug) && (
@@ -569,6 +637,13 @@ export default function App() {
                                 paletteName={paletteEntry.name}
                                 outputScale={outputScale}
                                 previewScale={previewScale}
+                                frames={catalog.frames}
+                                frameOverride={result.frameOverride ?? FRAME_SELECTION_DEFAULT}
+                                onFrameOverrideChange={(next) =>
+                                  updateHistoryFrameOverride(batch.id, idx, next)
+                                }
+                                effectiveFrame={resolveEffective(result.frameOverride ?? FRAME_SELECTION_DEFAULT)}
+                                defaultFrameLabel={defaultFrameLabel}
                                 onDelete={() =>
                                   deleteFromHistory(batch.id, idx)
                                 }
@@ -602,49 +677,3 @@ export default function App() {
   );
 }
 
-function downloadResult(
-  filename: string,
-  result: PipelineResult,
-  palette: [string, string, string, string],
-  paletteName: string,
-  outputScale: number = 1,
-) {
-  // Dynamically import to avoid circular issues
-  import("gbcam-extract").then(({ applyPalette }) => {
-    try {
-      // Validate input before processing
-      if (!result.grayscale || !result.grayscale.data) {
-        console.error("Cannot download: invalid image data");
-        return;
-      }
-
-      const colored = applyPalette(result.grayscale, palette);
-
-      if (!colored || !colored.data || colored.data.length === 0) {
-        console.error("Failed to apply palette for download");
-        return;
-      }
-
-      const canvas = document.createElement("canvas");
-      canvas.width = colored.width * outputScale;
-      canvas.height = colored.height * outputScale;
-      const ctx = canvas.getContext("2d")!;
-      ctx.imageSmoothingEnabled = false;
-      const cloned = new Uint8ClampedArray(colored.data);
-      const imgData = new ImageData(cloned, colored.width, colored.height);
-      const tmp = document.createElement("canvas");
-      tmp.width = colored.width;
-      tmp.height = colored.height;
-      tmp.getContext("2d")!.putImageData(imgData, 0, 0);
-      ctx.drawImage(tmp, 0, 0, canvas.width, canvas.height);
-      const link = document.createElement("a");
-      const baseName = filename.replace(/\.[^.]+$/, "");
-      const sanitizedPaletteName = sanitizePaletteName(paletteName);
-      link.download = `${baseName}_${sanitizedPaletteName}_gb.png`;
-      link.href = canvas.toDataURL("image/png");
-      link.click();
-    } catch (err) {
-      console.error("Error downloading image:", err);
-    }
-  });
-}

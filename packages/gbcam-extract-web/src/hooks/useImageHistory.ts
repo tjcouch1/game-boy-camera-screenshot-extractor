@@ -7,6 +7,7 @@ import {
 } from "../utils/serialization.js";
 import { useLocalStorage } from "./useLocalStorage.js";
 import type { ProcessingResult } from "./useProcessing.js";
+import type { FrameSelection } from "../types/frame-selection.js";
 
 export interface ImageHistoryBatch {
   id: string;
@@ -201,6 +202,24 @@ export function useImageHistory() {
     });
   }, [settings]);
 
+  const updateFrameOverride = useCallback(
+    (batchId: string, resultIndex: number, override: FrameSelection) => {
+      setHistory((prev) =>
+        prev.map((batch) =>
+          batch.id === batchId
+            ? {
+                ...batch,
+                results: batch.results.map((r, i) =>
+                  i === resultIndex ? { ...r, frameOverride: override } : r,
+                ),
+              }
+            : batch,
+        ),
+      );
+    },
+    [],
+  );
+
   return {
     history,
     settings,
@@ -212,5 +231,6 @@ export function useImageHistory() {
     deleteAllHistory,
     updateSettings,
     pruneHistory,
+    updateFrameOverride,
   };
 }
