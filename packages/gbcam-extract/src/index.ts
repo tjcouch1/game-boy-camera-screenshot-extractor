@@ -28,6 +28,8 @@ export {
   ADDITIONAL_PALETTES,
   FUN_PALETTES,
 } from "./data/palettes-generated.js";
+export type { Frame } from "./frames/types.js";
+export { splitSheet, dedupeFrames, composeFrame } from "./frames/index.js";
 
 import type { GBImageData, PipelineResult, PipelineOptions } from "./common.js";
 import { locate } from "./locate.js";
