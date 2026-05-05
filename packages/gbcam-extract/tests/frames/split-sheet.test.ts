@@ -10,11 +10,8 @@ import { loadImage, repoRoot } from "../helpers/load-image.js";
  *   • Background fills everything except:
  *     - One 160 × 144 grayscale frame at (10, 10) with a 128 × 112 hole at
  *       interior (16, 16) (i.e. sheet pixel (26, 26)). Frame value 0 (black).
- *     - One 50 × 50 non-hole rectangle at (200 - 60, 200 - 60) = (140, 140),
- *       value 165 (light gray) — should be filtered out (no hole).
- *
- * Wait — 140 + 50 = 190 which is fine. But the 160×144 frame at (10,10) needs
- * to fit: 10 + 160 = 170, 10 + 144 = 154 — fits in 200 × 200.
+ *     - One 50 × 50 non-hole rectangle at (140, 140), value 165 (light gray) —
+ *       should be filtered out (no hole).
  */
 function buildSyntheticSheet(): GBImageData {
   const W = 200;

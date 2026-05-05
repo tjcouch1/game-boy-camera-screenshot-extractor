@@ -3,6 +3,8 @@ import type { Frame } from "./types.js";
 
 const HOLE_W = 128;
 const HOLE_H = 112;
+const NORMAL_W = 160;
+const NORMAL_H = 144;
 /** Per-channel tolerance when matching the background colour. */
 const BG_TOLERANCE = 2;
 /** Per-channel tolerance when checking whether a region is uniform-coloured. */
@@ -23,15 +25,13 @@ interface BBox {
  * Algorithm:
  *   1. Read the top-left pixel as the background colour.
  *   2. Build a mask of background pixels (with ±BG_TOLERANCE per channel).
- *   3. Build a 2D prefix sum of the background mask so any rectangle's
- *      "is entirely background" check is O(1).
- *   4. Find connected components of NON-background pixels (4-connectivity).
- *   5. For each component, find the first 128 × 112 sub-rectangle that's
- *      entirely uniform colour (any single colour, not just background);
+ *   3. Find connected components of NON-background pixels (4-connectivity).
+ *   4. For each component, find the first 128 × 112 sub-rectangle that is
+ *      uniform colour (handles holes that aren't the exact background colour);
  *      if found it's a frame, otherwise drop it.
- *   6. Recompute the tight frame bounding box from the hole edges so that
+ *   5. Recompute the tight frame bounding box from the hole edges so that
  *      spurious merged pixels outside the frame body do not distort the size.
- *   7. Sort the kept frames in (y, x) reading order and number per type.
+ *   6. Sort the kept frames in (y, x) reading order and number per type.
  */
 export function splitSheet(sheet: GBImageData, sheetStem: string): Frame[] {
   const W = sheet.width;
@@ -56,29 +56,6 @@ export function splitSheet(sheet: GBImageData, sheetStem: string): Frame[] {
       bgMask[i] = 1;
     }
   }
-
-  // 2D prefix sum of bgMask: psum[(y+1)*(W+1) + (x+1)] = sum over (0..y, 0..x).
-  const PW = W + 1;
-  const psum = new Int32Array(PW * (H + 1));
-  for (let y = 0; y < H; y++) {
-    let rowSum = 0;
-    for (let x = 0; x < W; x++) {
-      rowSum += bgMask[y * W + x];
-      psum[(y + 1) * PW + (x + 1)] =
-        psum[y * PW + (x + 1)] + rowSum;
-    }
-  }
-
-  /** Sum of bgMask over [x0, x1) × [y0, y1) (exclusive). */
-  const rectSum = (x0: number, y0: number, x1: number, y1: number): number =>
-    psum[y1 * PW + x1] -
-    psum[y0 * PW + x1] -
-    psum[y1 * PW + x0] +
-    psum[y0 * PW + x0];
-
-  /** True iff every pixel in [x0,x1)×[y0,y1) is background. */
-  const isAllBg = (x0: number, y0: number, x1: number, y1: number): boolean =>
-    rectSum(x0, y0, x1, y1) === (x1 - x0) * (y1 - y0);
 
   /**
    * True iff every pixel in the 128 × 112 region starting at (x0, y0) is
@@ -208,7 +185,8 @@ export function splitSheet(sheet: GBImageData, sheetStem: string): Frame[] {
   for (const c of candidates) {
     const w = c.bbox.x1 - c.bbox.x0;
     const h = c.bbox.y1 - c.bbox.y0;
-    const type: "normal" | "wild" = w === 160 && h === 144 ? "normal" : "wild";
+    const type: "normal" | "wild" =
+      w === NORMAL_W && h === NORMAL_H ? "normal" : "wild";
     const index = type === "normal" ? ++normalIdx : ++wildIdx;
     const id = `${sheetStem}:${type}:${index}`;
     const pixels = new Uint8ClampedArray(w * h);
