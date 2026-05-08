@@ -12,6 +12,10 @@ import { PalettePicker } from "./components/PalettePicker.js";
 import { PipelineDebugViewer } from "./components/PipelineDebugViewer.js";
 import { sanitizePaletteName } from "./utils/filenames.js";
 import { buildOutputCanvas } from "./utils/buildOutputCanvas.js";
+import {
+  frameDisplayName,
+  sanitizeFrameName,
+} from "./utils/frame-display.js";
 import type { PaletteEntry } from "./data/palettes.js";
 import {
   type FrameSelection,
@@ -162,7 +166,7 @@ export default function App() {
     if (selection.kind === "none") return "No frame";
     if (selection.kind === "default") return "Default";
     const f = catalog.getFrameById(selection.id);
-    return f ? `${f.sheetStem} — ${f.type} #${f.index}` : selection.id;
+    return f ? frameDisplayName(f) : selection.id;
   }
 
   function resolveEffective(override: FrameSelection): Frame | null {
@@ -436,8 +440,13 @@ export default function App() {
                           if (!canvas) return;
                           const baseName = r.filename.replace(/\.[^.]+$/, "");
                           const sanitizedPaletteName = sanitizePaletteName(paletteEntry.name);
+                          const frameSlug = effective
+                            ? sanitizeFrameName(frameDisplayName(effective))
+                            : "";
                           const link = document.createElement("a");
-                          link.download = `${baseName}_${sanitizedPaletteName}_gb.png`;
+                          link.download = [baseName, sanitizedPaletteName, frameSlug, "gb"]
+                            .filter(Boolean)
+                            .join("_") + ".png";
                           link.href = canvas.toDataURL("image/png");
                           link.click();
                         });

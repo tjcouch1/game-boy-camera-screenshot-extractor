@@ -10,6 +10,7 @@ import { Button } from "@/shadcn/components/button";
 import { ChevronDown, Frame as FrameIcon } from "lucide-react";
 import { cn } from "@/shadcn/utils/utils";
 import type { FrameSelection } from "../types/frame-selection.js";
+import { frameDisplayName } from "../utils/frame-display.js";
 
 const HOLE_W = 128;
 const HOLE_H = 112;
@@ -165,10 +166,6 @@ function FrameCornerCanvas({
       style={{ imageRendering: "pixelated" }}
     />
   );
-}
-
-function frameDisplayName(frame: Frame): string {
-  return `${frame.sheetStem} — ${frame.type} #${frame.index}`;
 }
 
 function selectionLabel(
@@ -333,7 +330,7 @@ function FrameTile({
       type="button"
       onClick={onClick}
       className={cn(
-        "flex flex-col items-center gap-1 rounded border bg-card p-2 text-xs hover:bg-accent",
+        "flex flex-col items-center justify-end gap-1 rounded border bg-card p-2 text-xs hover:bg-accent",
         selected && "ring-2 ring-primary",
       )}
     >

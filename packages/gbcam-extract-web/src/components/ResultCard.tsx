@@ -7,6 +7,10 @@ import {
   copyImageToClipboard,
 } from "../utils/shareImage.js";
 import { sanitizePaletteName } from "../utils/filenames.js";
+import {
+  frameDisplayName,
+  sanitizeFrameName,
+} from "../utils/frame-display.js";
 import { Button } from "@/shadcn/components/button";
 import { Badge } from "@/shadcn/components/badge";
 import {
@@ -121,11 +125,14 @@ export function ResultCard({
     const outputCanvas = buildOutputCanvas(result, palette, effectiveFrame, outputScale);
     if (!outputCanvas) return;
     const basename = filename.replace(/\.[^.]+$/, "");
-    const sanitized = sanitizePaletteName(paletteName);
+    const paletteSlug = sanitizePaletteName(paletteName);
+    const frameSlug = effectiveFrame
+      ? sanitizeFrameName(frameDisplayName(effectiveFrame))
+      : "";
     const link = document.createElement("a");
-    link.download = sanitized
-      ? `${basename}_${sanitized}_gb.png`
-      : `${basename}_gb.png`;
+    link.download = [basename, paletteSlug, frameSlug, "gb"]
+      .filter(Boolean)
+      .join("_") + ".png";
     link.href = outputCanvas.toDataURL("image/png");
     link.click();
   }, [result, palette, effectiveFrame, outputScale, filename, paletteName]);
