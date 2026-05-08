@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Frame } from "gbcam-extract";
+import type { Frame, GBImageData } from "gbcam-extract";
 import { composeFrame, applyPalette } from "gbcam-extract";
 import {
   Popover,
@@ -13,6 +13,8 @@ import type { FrameSelection } from "../types/frame-selection.js";
 
 const HOLE_W = 128;
 const HOLE_H = 112;
+/** Display size (in CSS pixels) of the trigger button's corner thumbnail. */
+const TRIGGER_THUMB_PX = 24;
 
 interface FramePickerProps {
   value: FrameSelection;
@@ -23,11 +25,21 @@ interface FramePickerProps {
   mode: "default" | "result";
   /** Display label for the global default (used in "result" mode). */
   defaultFrameLabel?: string;
+  /**
+   * Currently-resolved default frame, shown in the "Default — …" tile when
+   * `mode === "result"`. Null means the default is "no frame".
+   */
+  defaultFrame?: Frame | null;
+  /**
+   * Optional 128×112 grayscale image to compose into every thumbnail. When
+   * omitted, thumbnails render with the lightest palette color in the hole.
+   */
+  image?: GBImageData;
   disabled?: boolean;
 }
 
 /** Build a dummy 128×112 lightest-color image for picker thumbnails. */
-function buildEmptyImage(): { data: Uint8ClampedArray; width: number; height: number } {
+function buildEmptyImage(): GBImageData {
   const data = new Uint8ClampedArray(HOLE_W * HOLE_H * 4);
   for (let i = 0; i < HOLE_W * HOLE_H; i++) {
     data[i * 4 + 0] = 255;
@@ -44,12 +56,14 @@ const EMPTY_IMAGE = buildEmptyImage();
 function FrameCanvas({
   frame,
   palette,
+  image,
   width,
   height,
   className,
 }: {
   frame: Frame | null;
   palette: [string, string, string, string];
+  image: GBImageData;
   width: number;
   height: number;
   className?: string;
@@ -66,12 +80,12 @@ function FrameCanvas({
     let rendered;
     if (frame) {
       try {
-        rendered = composeFrame(EMPTY_IMAGE, frame, palette);
+        rendered = composeFrame(image, frame, palette);
       } catch {
-        rendered = applyPalette(EMPTY_IMAGE, palette);
+        rendered = applyPalette(image, palette);
       }
     } else {
-      rendered = applyPalette(EMPTY_IMAGE, palette);
+      rendered = applyPalette(image, palette);
     }
     const tmp = document.createElement("canvas");
     tmp.width = rendered.width;
@@ -84,8 +98,73 @@ function FrameCanvas({
         0,
       );
     ctx.drawImage(tmp, 0, 0, width, height);
-  }, [frame, palette, width, height]);
+  }, [frame, palette, image, width, height]);
   return <canvas ref={ref} className={className} style={{ imageRendering: "pixelated" }} />;
+}
+
+/**
+ * Render the largest top-left square of a frame that doesn't overlap the
+ * 128×112 hole. Side length = max(holeX, holeY). Shown in the picker's
+ * trigger button so the selected frame's distinctive corner art is visible.
+ */
+function FrameCornerCanvas({
+  frame,
+  palette,
+  displaySize,
+  className,
+}: {
+  frame: Frame;
+  palette: [string, string, string, string];
+  displaySize: number;
+  className?: string;
+}) {
+  const ref = useRef<HTMLCanvasElement>(null);
+  useEffect(() => {
+    const canvas = ref.current;
+    if (!canvas) return;
+    const side = Math.max(frame.holeX, frame.holeY);
+    canvas.width = displaySize;
+    canvas.height = displaySize;
+    const ctx = canvas.getContext("2d");
+    if (!ctx || side <= 0) return;
+    ctx.imageSmoothingEnabled = false;
+
+    const W = frame.width;
+    const gray = new Uint8ClampedArray(side * side * 4);
+    for (let y = 0; y < side; y++) {
+      for (let x = 0; x < side; x++) {
+        const v = frame.pixels[y * W + x];
+        const i = (y * side + x) * 4;
+        gray[i] = v;
+        gray[i + 1] = v;
+        gray[i + 2] = v;
+        gray[i + 3] = 255;
+      }
+    }
+    const rendered = applyPalette(
+      { data: gray, width: side, height: side },
+      palette,
+    );
+
+    const tmp = document.createElement("canvas");
+    tmp.width = side;
+    tmp.height = side;
+    tmp
+      .getContext("2d")!
+      .putImageData(
+        new ImageData(new Uint8ClampedArray(rendered.data), side, side),
+        0,
+        0,
+      );
+    ctx.drawImage(tmp, 0, 0, displaySize, displaySize);
+  }, [frame, palette, displaySize]);
+  return (
+    <canvas
+      ref={ref}
+      className={className}
+      style={{ imageRendering: "pixelated" }}
+    />
+  );
 }
 
 function frameDisplayName(frame: Frame): string {
@@ -110,12 +189,19 @@ export function FramePicker({
   frames,
   mode,
   defaultFrameLabel,
+  defaultFrame,
+  image,
   disabled,
 }: FramePickerProps) {
   const framesById = useMemo(() => new Map(frames.map((f) => [f.id, f] as const)), [frames]);
   const triggerFrame: Frame | null =
-    value.kind === "frame" ? framesById.get(value.id) ?? null : null;
+    value.kind === "frame"
+      ? framesById.get(value.id) ?? null
+      : value.kind === "default"
+        ? defaultFrame ?? null
+        : null;
   const triggerLabel = selectionLabel(value, framesById, defaultFrameLabel);
+  const thumbnailImage = image ?? EMPTY_IMAGE;
 
   const normals = useMemo(() => frames.filter((f) => f.type === "normal"), [frames]);
   const wilds = useMemo(() => frames.filter((f) => f.type === "wild"), [frames]);
@@ -134,21 +220,20 @@ export function FramePicker({
       <PopoverTrigger
         render={
           <Button variant="secondary" disabled={disabled} className="gap-2">
-            {triggerFrame || value.kind === "default" || value.kind === "none" ? (
-              <span className="inline-flex size-4 items-center justify-center overflow-hidden rounded border border-border">
-                {triggerFrame ? (
-                  <FrameCanvas
-                    frame={triggerFrame}
-                    palette={palette}
-                    width={16}
-                    height={16}
-                    className="size-4"
-                  />
-                ) : (
-                  <FrameIcon className="size-3 text-muted-foreground" />
-                )}
-              </span>
-            ) : null}
+            <span
+              className="inline-flex items-center justify-center overflow-hidden rounded border border-border"
+              style={{ width: TRIGGER_THUMB_PX, height: TRIGGER_THUMB_PX }}
+            >
+              {triggerFrame ? (
+                <FrameCornerCanvas
+                  frame={triggerFrame}
+                  palette={palette}
+                  displaySize={TRIGGER_THUMB_PX}
+                />
+              ) : (
+                <FrameIcon className="size-4 text-muted-foreground" />
+              )}
+            </span>
             <span className="truncate max-w-[12em]">{triggerLabel}</span>
             <ChevronDown data-icon="inline-end" />
           </Button>
@@ -162,9 +247,10 @@ export function FramePicker({
               selected={value.kind === "default"}
               onClick={() => select({ kind: "default" })}
               palette={palette}
-              frame={null}
-              previewW={160}
-              previewH={144}
+              image={thumbnailImage}
+              frame={defaultFrame ?? null}
+              previewW={defaultFrame?.width ?? 160}
+              previewH={defaultFrame?.height ?? 144}
             />
           )}
           <FrameTile
@@ -172,9 +258,10 @@ export function FramePicker({
             selected={value.kind === "none"}
             onClick={() => select({ kind: "none" })}
             palette={palette}
+            image={thumbnailImage}
             frame={null}
-            previewW={160}
-            previewH={144}
+            previewW={HOLE_W}
+            previewH={HOLE_H}
           />
         </div>
         {normals.length > 0 && (
@@ -188,6 +275,7 @@ export function FramePicker({
                   selected={value.kind === "frame" && value.id === f.id}
                   onClick={() => select({ kind: "frame", id: f.id })}
                   palette={palette}
+                  image={thumbnailImage}
                   frame={f}
                   previewW={160}
                   previewH={144}
@@ -207,6 +295,7 @@ export function FramePicker({
                   selected={value.kind === "frame" && value.id === f.id}
                   onClick={() => select({ kind: "frame", id: f.id })}
                   palette={palette}
+                  image={thumbnailImage}
                   frame={f}
                   previewW={f.width}
                   previewH={f.height}
@@ -225,6 +314,7 @@ function FrameTile({
   selected,
   onClick,
   palette,
+  image,
   frame,
   previewW,
   previewH,
@@ -233,6 +323,7 @@ function FrameTile({
   selected: boolean;
   onClick: () => void;
   palette: [string, string, string, string];
+  image: GBImageData;
   frame: Frame | null;
   previewW: number;
   previewH: number;
@@ -249,6 +340,7 @@ function FrameTile({
       <FrameCanvas
         frame={frame}
         palette={palette}
+        image={image}
         width={previewW}
         height={previewH}
         className="max-w-full h-auto rounded border border-border"

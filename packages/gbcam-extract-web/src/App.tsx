@@ -174,6 +174,7 @@ export default function App() {
   }
 
   const defaultFrameLabel = frameLabelFor(defaultFrame);
+  const resolvedDefaultFrame: Frame | null = resolveEffective(defaultFrame);
 
   function setResultFrameOverride(filename: string, next: FrameSelection) {
     setCurrentResults((prev) =>
@@ -528,6 +529,7 @@ export default function App() {
                         onFrameOverrideChange={(next) => setResultFrameOverride(r.filename, next)}
                         effectiveFrame={resolveEffective(r.frameOverride ?? FRAME_SELECTION_DEFAULT)}
                         defaultFrameLabel={defaultFrameLabel}
+                        defaultFrame={resolvedDefaultFrame}
                         framePickerDisabled={catalog.status !== "ready"}
                         onDelete={() => handleDeleteResult(r.filename)}
                       />
@@ -661,6 +663,7 @@ export default function App() {
                                 }
                                 effectiveFrame={resolveEffective(result.frameOverride ?? FRAME_SELECTION_DEFAULT)}
                                 defaultFrameLabel={defaultFrameLabel}
+                                defaultFrame={resolvedDefaultFrame}
                                 framePickerDisabled={catalog.status !== "ready"}
                                 onDelete={() =>
                                   deleteFromHistory(batch.id, idx)
