@@ -26,20 +26,23 @@ describe("dedupeFrames", () => {
     expect(dedupeFrames([])).toEqual([]);
   });
 
-  it("returns the input unchanged when there are no duplicates", () => {
+  it("returns one entry per distinct frame when there are no duplicates", () => {
     const a = makeSyntheticFrame("A", 1, 0);
     const b = makeSyntheticFrame("B", 1, 82);
     const out = dedupeFrames([a, b]);
-    expect(out.map((f) => f.id)).toEqual(["A:normal:1", "B:normal:1"]);
+    expect(out.map((f) => f.id).sort()).toEqual([
+      "A:normal:1",
+      "B:normal:1",
+    ]);
   });
 
-  it("keeps the alphabetically earlier sheet's frame when duplicates exist", () => {
-    // Same pixels, different stems. JPN < USA alphabetically, so JPN wins.
+  it("keeps the alphabetically later sheet's frame when duplicates exist", () => {
+    // Same pixels, different stems. USA > JPN alphabetically, so USA wins.
     const usa = makeSyntheticFrame("Frames_USA", 1, 0);
     const jpn = makeSyntheticFrame("Frames_JPN", 1, 0);
     const out = dedupeFrames([usa, jpn]);
     expect(out).toHaveLength(1);
-    expect(out[0].id).toBe("Frames_JPN:normal:1");
+    expect(out[0].id).toBe("Frames_USA:normal:1");
   });
 
   it("treats different dimensions as distinct even when pixel arrays would match in prefix", () => {
@@ -78,9 +81,9 @@ describe("dedupeFrames", () => {
         "combined": 51,
         "deduped": 36,
         "jpn": 26,
-        "jpnWinners": 26,
+        "jpnWinners": 11,
         "usa": 25,
-        "usaWinners": 10,
+        "usaWinners": 25,
       }
     `);
   });

@@ -3,14 +3,15 @@ import type { Frame } from "./types.js";
 /**
  * Remove pixel-identical duplicates across frames.
  *
- * Tiebreaker: the alphabetically-earliest `sheetStem` wins. We sort the
- * input by stem first, then walk and keep first-seen unique fingerprints.
+ * Tiebreaker: the alphabetically-latest `sheetStem` wins (so `Frames_USA`
+ * beats `Frames_JPN`). We sort the input descending by stem first, then walk
+ * and keep first-seen unique fingerprints.
  *
  * Fingerprint = `<width>x<height>:<type>:<FNV-1a hash of pixels>`.
  */
 export function dedupeFrames(frames: Frame[]): Frame[] {
   const sorted = [...frames].sort((a, b) =>
-    a.sheetStem.localeCompare(b.sheetStem),
+    b.sheetStem.localeCompare(a.sheetStem),
   );
   const seen = new Set<string>();
   const out: Frame[] = [];
