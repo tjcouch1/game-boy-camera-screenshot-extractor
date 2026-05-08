@@ -38,6 +38,11 @@ interface ResultCardProps {
   effectiveFrame: Frame | null;
   /** Display label for the "Default — …" picker tile. */
   defaultFrameLabel: string;
+  /**
+   * Currently-resolved global default frame. Shown in the "Default — …" tile
+   * inside the per-result picker. Null = global default is "no frame".
+   */
+  defaultFrame: Frame | null;
   /** Disable the FramePicker (e.g. while the catalog is still loading). */
   framePickerDisabled?: boolean;
   onDelete?: () => void;
@@ -56,6 +61,7 @@ export function ResultCard({
   onFrameOverrideChange,
   effectiveFrame,
   defaultFrameLabel,
+  defaultFrame,
   framePickerDisabled,
   onDelete,
 }: ResultCardProps) {
@@ -176,7 +182,12 @@ export function ResultCard({
         )}
       </CardHeader>
       <CardContent className="flex flex-col sm:flex-row gap-3 p-0">
-        <div className="flex flex-col gap-2 items-start order-2 sm:order-1">
+        <canvas
+          ref={canvasRef}
+          className="rounded border self-start"
+          style={{ imageRendering: "pixelated", maxWidth: "100%" }}
+        />
+        <div className="flex flex-col gap-2 items-start">
           <div className="flex flex-wrap gap-2 items-start content-start">
             <Button onClick={handleDownload}>
               <Download data-icon="inline-start" />
@@ -200,14 +211,11 @@ export function ResultCard({
             frames={frames}
             mode="result"
             defaultFrameLabel={defaultFrameLabel}
+            defaultFrame={defaultFrame}
+            image={result.grayscale}
             disabled={framePickerDisabled}
           />
         </div>
-        <canvas
-          ref={canvasRef}
-          className="rounded border self-start order-1 sm:order-2"
-          style={{ imageRendering: "pixelated", maxWidth: "100%" }}
-        />
       </CardContent>
     </Card>
   );
