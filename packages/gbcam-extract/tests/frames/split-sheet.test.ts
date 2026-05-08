@@ -72,6 +72,7 @@ describe("splitSheet — synthetic", () => {
     const f = frames[0];
     expect(f.id).toBe("Synthetic:normal:1");
     expect(f.sheetStem).toBe("Synthetic");
+    expect(f.aliasStems).toEqual(["Synthetic"]);
     expect(f.type).toBe("normal");
     expect(f.index).toBe(1);
     expect(f.width).toBe(160);

@@ -35,6 +35,7 @@ function makeFrame(width: number, height: number, holeX: number, holeY: number, 
   return {
     id: "Test:normal:1",
     sheetStem: "Test",
+    aliasStems: ["Test"],
     type: "normal",
     index: 1,
     width,

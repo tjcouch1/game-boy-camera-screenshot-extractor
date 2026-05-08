@@ -11,6 +11,14 @@ export interface Frame {
   id: string;
   /** Stem of the source sheet (e.g. "Frames_USA"). */
   sheetStem: string;
+  /**
+   * Sheet stems that contained an identical frame. Always includes
+   * `sheetStem`. After {@link dedupeFrames}, contains every stem whose copy
+   * was merged into this winner — so a caller can decide whether to display
+   * the source region (one stem) or treat the frame as cross-sheet (more
+   * than one).
+   */
+  aliasStems: string[];
   /** "normal" if dimensions are exactly 160 × 144, else "wild". */
   type: "normal" | "wild";
   /** 1-based index, scoped to (sheetStem, type), in (y, x) reading order. */

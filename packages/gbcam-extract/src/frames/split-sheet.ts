@@ -206,6 +206,7 @@ export function splitSheet(sheet: GBImageData, sheetStem: string): Frame[] {
     frames.push({
       id,
       sheetStem,
+      aliasStems: [sheetStem],
       type,
       index,
       width: w,

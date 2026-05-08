@@ -11,6 +11,7 @@ function makeSyntheticFrame(stem: string, index: number, fillByte: number): Fram
   return {
     id: `${stem}:normal:${index}`,
     sheetStem: stem,
+    aliasStems: [stem],
     type: "normal",
     index,
     width: w,
@@ -43,6 +44,17 @@ describe("dedupeFrames", () => {
     const out = dedupeFrames([usa, jpn]);
     expect(out).toHaveLength(1);
     expect(out[0].id).toBe("Frames_USA:normal:1");
+    // Both stems should appear in aliasStems so callers can detect that this
+    // frame is shared across sheets.
+    expect(out[0].aliasStems.sort()).toEqual(["Frames_JPN", "Frames_USA"]);
+  });
+
+  it("does not mutate the input frames' aliasStems arrays", () => {
+    const usa = makeSyntheticFrame("Frames_USA", 1, 0);
+    const jpn = makeSyntheticFrame("Frames_JPN", 1, 0);
+    dedupeFrames([usa, jpn]);
+    expect(usa.aliasStems).toEqual(["Frames_USA"]);
+    expect(jpn.aliasStems).toEqual(["Frames_JPN"]);
   });
 
   it("treats different dimensions as distinct even when pixel arrays would match in prefix", () => {
@@ -75,6 +87,7 @@ describe("dedupeFrames", () => {
       deduped: out.length,
       jpnWinners: out.filter((f) => f.sheetStem === "Frames_JPN").length,
       usaWinners: out.filter((f) => f.sheetStem === "Frames_USA").length,
+      sharedAcrossSheets: out.filter((f) => f.aliasStems.length > 1).length,
     };
     expect(summary).toMatchInlineSnapshot(`
       {
@@ -82,6 +95,7 @@ describe("dedupeFrames", () => {
         "deduped": 36,
         "jpn": 26,
         "jpnWinners": 11,
+        "sharedAcrossSheets": 15,
         "usa": 25,
         "usaWinners": 25,
       }
