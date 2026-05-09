@@ -69,9 +69,12 @@ relative-path convention used by `copy-frames.ts`.
 
 ### `package.json` wiring
 
-Add a new script next to `build:frames` and chain it into the same hook
-points so that running any flow that builds frames also builds sample
-pictures:
+Add the new per-asset script next to `build:frames` plus a combined
+`build:assets` script that runs all three asset builders. Replace the
+repeated `build:instructions && build:frames` chains in `dev`, `dev:host`,
+`build`, `preview`, and `preview:host` with a single call to
+`pnpm build:assets`. Update `postinstall` to use it too (with
+`generate-licenses` still chained on, since that's specific to install):
 
 ```jsonc
 {
@@ -79,15 +82,19 @@ pictures:
     "build:instructions": "node scripts/generate-instructions.ts",
     "build:frames": "node scripts/copy-frames.ts",
     "build:sample-pictures": "node scripts/copy-sample-pictures.ts",
-    "dev": "pnpm build:instructions && pnpm build:frames && pnpm build:sample-pictures && vite",
-    "dev:host": "pnpm build:instructions && pnpm build:frames && pnpm build:sample-pictures && vite --host",
-    "build": "pnpm build:instructions && pnpm build:frames && pnpm build:sample-pictures && tsc -b && vite build",
-    "preview": "pnpm build:instructions && pnpm build:frames && pnpm build:sample-pictures && vite preview",
-    "preview:host": "pnpm build:instructions && pnpm build:frames && pnpm build:sample-pictures && vite preview --host",
-    "postinstall": "node scripts/generate-instructions.ts && node scripts/generate-licenses.ts && node scripts/copy-frames.ts && node scripts/copy-sample-pictures.ts"
+    "build:assets": "pnpm build:instructions && pnpm build:frames && pnpm build:sample-pictures",
+    "dev": "pnpm build:assets && vite",
+    "dev:host": "pnpm build:assets && vite --host",
+    "build": "pnpm build:assets && tsc -b && vite build",
+    "preview": "pnpm build:assets && vite preview",
+    "preview:host": "pnpm build:assets && vite preview --host",
+    "postinstall": "pnpm build:assets && node scripts/generate-licenses.ts"
   }
 }
 ```
+
+Adding a future asset builder is now a one-line change to `build:assets`
+instead of a sweep across six scripts.
 
 ### `.gitignore`
 
