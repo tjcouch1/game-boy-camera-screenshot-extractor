@@ -128,8 +128,10 @@ export function SamplePicturePicker({
       }
 
       if (files.length > 0) {
-        onImagesSelected(files);
         setOpen(false);
+        // Defer so the popover's close animation paints before
+        // the (main-thread-blocking) pipeline starts processing.
+        setTimeout(() => onImagesSelected(files), 150);
       }
     } finally {
       setIsSubmitting(false);
@@ -170,7 +172,7 @@ export function SamplePicturePicker({
                   aria-pressed={isSelected}
                   aria-label={`Toggle ${entry.filename}`}
                   className={cn(
-                    "relative rounded-md border bg-muted p-1 ring-2 ring-transparent transition-colors text-start",
+                    "relative rounded-md border bg-muted p-1 ring-2 ring-inset ring-transparent transition-colors text-start",
                     isSelected && "ring-primary border-primary",
                   )}
                 >
