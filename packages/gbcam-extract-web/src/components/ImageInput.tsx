@@ -70,7 +70,7 @@ export function ImageInput({ onImagesSelected, disabled }: ImageInputProps) {
         </div>
       </div>
 
-      <div className="flex gap-3 mt-3">
+      <div className="flex flex-wrap gap-3 mt-3">
         <Button
           variant="secondary"
           onClick={() => fileInputRef.current?.click()}
