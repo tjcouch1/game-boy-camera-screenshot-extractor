@@ -45,6 +45,8 @@ function main() {
     return;
   }
 
+  // Clear the destination so files removed/renamed at the source don't linger.
+  fs.rmSync(destPublic, { recursive: true, force: true });
   fs.mkdirSync(destPublic, { recursive: true });
   fs.mkdirSync(path.dirname(destManifest), { recursive: true });
 

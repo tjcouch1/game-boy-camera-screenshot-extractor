@@ -51,10 +51,9 @@ function processMarkdown(markdown: string): string {
     "https://github.com/tjcouch1/game-boy-camera-screenshot-extractor/blob/main/";
   const newBase = "./instructions-assets/";
 
-  // Ensure assets directory exists
-  if (!fs.existsSync(assetsDir)) {
-    fs.mkdirSync(assetsDir, { recursive: true });
-  }
+  // Clear the destination so files removed/renamed at the source don't linger.
+  fs.rmSync(assetsDir, { recursive: true, force: true });
+  fs.mkdirSync(assetsDir, { recursive: true });
 
   // Find and copy all GitHub blob links
   const linkRegex = new RegExp(

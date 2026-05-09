@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { splitSheet } from "../../src/frames/split-sheet.js";
-import { dedupeFrames } from "../../src/frames/dedupe.js";
+import { dedupeFrames, appendDeduped } from "../../src/frames/dedupe.js";
 import type { Frame } from "../../src/frames/types.js";
 import { loadImage, repoRoot } from "../helpers/load-image.js";
 
@@ -13,6 +13,7 @@ function makeSyntheticFrame(stem: string, index: number, fillByte: number): Fram
     sheetStem: stem,
     aliasStems: [stem],
     type: "normal",
+    kind: "sheet",
     index,
     width: w,
     height: h,
@@ -65,12 +66,31 @@ describe("dedupeFrames", () => {
     expect(out).toHaveLength(2);
   });
 
+  it("appendDeduped keeps base order, appends only new fingerprints, and merges aliases", () => {
+    const sheetA = makeSyntheticFrame("Frames_USA", 1, 0);
+    const sheetB = makeSyntheticFrame("Frames_USA", 2, 82);
+    const indDup = makeSyntheticFrame("ind-dup", 1, 0); // same pixels as sheetA
+    const indNew = makeSyntheticFrame("ind-new", 1, 165);
+    const out = appendDeduped([sheetA, sheetB], [indDup, indNew]);
+    // Sheets stay first, in their original order. Only the new individual frame is appended.
+    expect(out.map((f) => f.id)).toEqual([
+      "Frames_USA:normal:1",
+      "Frames_USA:normal:2",
+      "ind-new:normal:1",
+    ]);
+    // Duplicate individual's stem merged onto the matching sheet frame.
+    expect(out[0].aliasStems.sort()).toEqual(["Frames_USA", "ind-dup"]);
+    // Inputs should not be mutated.
+    expect(sheetA.aliasStems).toEqual(["Frames_USA"]);
+    expect(indDup.aliasStems).toEqual(["ind-dup"]);
+  });
+
   it("deduplicates real sheets and yields fewer frames than the sum", async () => {
     const usaSheet = await loadImage(
-      repoRoot("supporting-materials/frames/the-spriters-resource/Frames_USA.png"),
+      repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_USA.png"),
     );
     const jpnSheet = await loadImage(
-      repoRoot("supporting-materials/frames/the-spriters-resource/Frames_JPN.png"),
+      repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_JPN.png"),
     );
     const usa = splitSheet(usaSheet, "Frames_USA");
     const jpn = splitSheet(jpnSheet, "Frames_JPN");

@@ -257,18 +257,9 @@ python test_pipeline.py --input "../../test-input/zelda-poster-1.jpg" --referenc
 # Known issues
 
 - Conversion does not preserve the image with 100% accuracy
-- Output image is different on mobile vs on desktop using the same input image (means test results do not reflect accuracy on mobile)
-- Unique palette name issues
-  - If you click "+ Custom" twice on the same selection to add two custom palettes that are in editing mode, they receive different names (different number at the end). But when you try to save one, the other displays "A palette with this name already exists"
-  - Pasting the same new palette multiple times uses the same palette name incremented from the previous palette name
-- The progress bar does not display progress correctly.
 - Debug mode in the website is completely untested
 
 # Roadmap
 
-- Add instructions to the website
 - Accuracy improvements
-- Figure out output difference between mobile and desktop
 - Initial crop from phone picture to cropped and rotated image that is input to "warp" step
-- Add color palette selection (pipeline - already implemented in website)
-- Shadcn/ui

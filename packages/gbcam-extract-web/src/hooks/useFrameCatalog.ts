@@ -1,7 +1,12 @@
 // packages/gbcam-extract-web/src/hooks/useFrameCatalog.ts
 import { useEffect, useState } from "react";
 import type { Frame, GBImageData } from "gbcam-extract";
-import { splitSheet, dedupeFrames } from "gbcam-extract";
+import {
+  splitSheet,
+  loadIndividualFrame,
+  dedupeFrames,
+  appendDeduped,
+} from "gbcam-extract";
 import { FRAME_SHEETS } from "../generated/FrameSheets.js";
 
 export type FrameCatalogStatus = "loading" | "ready" | "error";
@@ -43,12 +48,22 @@ async function fetchSheet(url: string): Promise<GBImageData> {
 }
 
 async function buildCatalog(): Promise<{ frames: Frame[]; byId: Map<string, Frame> }> {
-  const all: Frame[] = [];
+  const sheetFrames: Frame[] = [];
+  const individualFrames: Frame[] = [];
   for (const entry of FRAME_SHEETS) {
-    const sheet = await fetchSheet(entry.url);
-    all.push(...splitSheet(sheet, entry.stem));
+    const image = await fetchSheet(entry.url);
+    if (entry.kind === "individual") {
+      individualFrames.push(loadIndividualFrame(image, entry.stem));
+    } else {
+      sheetFrames.push(...splitSheet(image, entry.stem));
+    }
   }
-  const frames = dedupeFrames(all);
+  // Dedupe sheets first so cross-sheet duplicates merge with the existing
+  // alphabetical-stem tiebreaker, then append individuals after — pixel
+  // duplicates of an existing sheet frame just merge their alias stem in
+  // rather than introducing a fresh entry.
+  const dedupedSheets = dedupeFrames(sheetFrames);
+  const frames = appendDeduped(dedupedSheets, individualFrames);
   const byId = new Map(frames.map((f) => [f.id, f] as const));
   return { frames, byId };
 }

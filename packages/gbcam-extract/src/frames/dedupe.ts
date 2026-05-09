@@ -18,18 +18,63 @@ export function dedupeFrames(frames: Frame[]): Frame[] {
   const byFp = new Map<string, Frame>();
   const order: string[] = [];
   for (const f of sorted) {
-    const fp = `${f.width}x${f.height}:${f.type}:${fnv1a(f.pixels)}`;
+    const fp = frameFingerprint(f);
     const winner = byFp.get(fp);
     if (winner) {
-      for (const stem of f.aliasStems) {
-        if (!winner.aliasStems.includes(stem)) winner.aliasStems.push(stem);
-      }
+      mergeAliases(winner, f);
     } else {
       byFp.set(fp, { ...f, aliasStems: [...f.aliasStems] });
       order.push(fp);
     }
   }
   return order.map((fp) => byFp.get(fp)!);
+}
+
+/**
+ * Append `more` to `base`, dropping any frame in `more` that duplicates a
+ * frame already in `base` (matched by fingerprint), and dropping duplicates
+ * within `more` (first occurrence wins). Aliases are merged onto whichever
+ * frame ends up in the result.
+ *
+ * Order: every frame from `base` keeps its position, then unique frames
+ * from `more` follow in input order. Use this when you need to layer a new
+ * source of frames after a previously-deduplicated set without resorting.
+ */
+export function appendDeduped(base: Frame[], more: Frame[]): Frame[] {
+  const byFp = new Map<string, Frame>();
+  const baseOrder: string[] = [];
+  for (const f of base) {
+    const fp = frameFingerprint(f);
+    if (!byFp.has(fp)) {
+      byFp.set(fp, { ...f, aliasStems: [...f.aliasStems] });
+      baseOrder.push(fp);
+    } else {
+      mergeAliases(byFp.get(fp)!, f);
+    }
+  }
+  const moreOrder: string[] = [];
+  for (const f of more) {
+    const fp = frameFingerprint(f);
+    const winner = byFp.get(fp);
+    if (winner) {
+      mergeAliases(winner, f);
+    } else {
+      byFp.set(fp, { ...f, aliasStems: [...f.aliasStems] });
+      moreOrder.push(fp);
+    }
+  }
+  return [...baseOrder, ...moreOrder].map((fp) => byFp.get(fp)!);
+}
+
+/** Stable identity key — same dimensions, type, and pixels → same fingerprint. */
+export function frameFingerprint(frame: Frame): string {
+  return `${frame.width}x${frame.height}:${frame.type}:${fnv1a(frame.pixels)}`;
+}
+
+function mergeAliases(winner: Frame, other: Frame): void {
+  for (const stem of other.aliasStems) {
+    if (!winner.aliasStems.includes(stem)) winner.aliasStems.push(stem);
+  }
 }
 
 /** FNV-1a 32-bit on a byte stream — fast and good enough for exact dedup. */

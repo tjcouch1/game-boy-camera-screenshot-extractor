@@ -95,7 +95,7 @@ describe("splitSheet — synthetic", () => {
 describe("splitSheet — real sheets", () => {
   it("splits Frames_USA.png into a stable set of frames", async () => {
     const sheet = await loadImage(
-      repoRoot("supporting-materials/frames/the-spriters-resource/Frames_USA.png"),
+      repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_USA.png"),
     );
     const frames = splitSheet(sheet, "Frames_USA");
 
@@ -179,7 +179,7 @@ describe("splitSheet — real sheets", () => {
 
   it("splits Frames_JPN.png into a stable set of frames", async () => {
     const sheet = await loadImage(
-      repoRoot("supporting-materials/frames/the-spriters-resource/Frames_JPN.png"),
+      repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_JPN.png"),
     );
     const frames = splitSheet(sheet, "Frames_JPN");
     expect(frames.length).toBeGreaterThan(0);

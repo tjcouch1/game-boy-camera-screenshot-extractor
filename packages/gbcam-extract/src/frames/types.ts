@@ -21,6 +21,14 @@ export interface Frame {
   aliasStems: string[];
   /** "normal" if dimensions are exactly 160 × 144, else "wild". */
   type: "normal" | "wild";
+  /**
+   * "sheet" — produced by {@link splitSheet} from a multi-frame sheet PNG.
+   * "individual" — produced by {@link loadIndividualFrame} from a single PNG
+   * whose entire body is the frame. Used by the UI to format the display
+   * name (sheet frames use a "Frame N (region)" label, individual frames use
+   * the cleaned file stem directly).
+   */
+  kind: "sheet" | "individual";
   /** 1-based index, scoped to (sheetStem, type), in (y, x) reading order. */
   index: number;
   width: number;

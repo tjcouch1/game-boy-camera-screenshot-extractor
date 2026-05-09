@@ -37,6 +37,7 @@ function makeFrame(width: number, height: number, holeX: number, holeY: number, 
     sheetStem: "Test",
     aliasStems: ["Test"],
     type: "normal",
+    kind: "sheet",
     index: 1,
     width,
     height,
@@ -99,7 +100,7 @@ describe("composeFrame", () => {
 
   it("works on a real frame", async () => {
     const sheet = await loadImage(
-      repoRoot("supporting-materials/frames/the-spriters-resource/Frames_USA.png"),
+      repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_USA.png"),
     );
     const frames = splitSheet(sheet, "Frames_USA");
     const frame = frames[0];
