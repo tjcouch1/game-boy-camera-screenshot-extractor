@@ -57,8 +57,9 @@ function main() {
     const dest = path.join(destPublic, rel);
     fs.mkdirSync(path.dirname(dest), { recursive: true });
     fs.copyFileSync(src, dest);
-    const url = "./sample-pictures/" + rel.split(path.sep).join("/");
-    const filename = path.basename(rel);
+    const relPosix = rel.split(path.sep).join("/");
+    const url = "./sample-pictures/" + relPosix;
+    const filename = relPosix;
     entries.push({ url, filename });
     console.log(`[copy-sample-pictures] ${src} -> ${dest}`);
   }
@@ -70,7 +71,7 @@ function main() {
 export interface SamplePictureEntry {
   /** URL the browser fetches (relative to the deployed root). */
   url: string;
-  /** Source filename including extension, e.g. "20260313_213416.jpg". */
+  /** Source-relative path with '/' separators, e.g. "20260313_213416.jpg" or "set-a/photo.jpg". */
   filename: string;
 }
 
