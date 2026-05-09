@@ -6,9 +6,17 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/shadcn/components/popover";
+import {
+  Drawer,
+  DrawerContent,
+  DrawerHeader,
+  DrawerTitle,
+  DrawerTrigger,
+} from "@/shadcn/components/drawer";
 import { Button } from "@/shadcn/components/button";
 import { ChevronDown, Frame as FrameIcon } from "lucide-react";
 import { cn } from "@/shadcn/utils/utils";
+import { useIsMobile } from "../hooks/useIsMobile.js";
 import type { FrameSelection } from "../types/frame-selection.js";
 import { frameDisplayName } from "../utils/frame-display.js";
 
@@ -204,6 +212,7 @@ export function FramePicker({
   const wilds = useMemo(() => frames.filter((f) => f.type === "wild"), [frames]);
 
   const [open, setOpen] = useState(false);
+  const isMobile = useIsMobile();
   const select = useCallback(
     (next: FrameSelection) => {
       onChange(next);
@@ -212,95 +221,115 @@ export function FramePicker({
     [onChange],
   );
 
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger
-        render={
-          <Button variant="secondary" disabled={disabled} className="gap-2">
-            <span
-              className="inline-flex items-center justify-center overflow-hidden rounded border border-border"
-              style={{ width: TRIGGER_THUMB_PX, height: TRIGGER_THUMB_PX }}
-            >
-              {triggerFrame ? (
-                <FrameCornerCanvas
-                  frame={triggerFrame}
-                  palette={palette}
-                  displaySize={TRIGGER_THUMB_PX}
-                />
-              ) : (
-                <FrameIcon className="size-4 text-muted-foreground" />
-              )}
-            </span>
-            <span className="truncate max-w-[12em]">{triggerLabel}</span>
-            <ChevronDown data-icon="inline-end" />
-          </Button>
-        }
-      />
-      <PopoverContent className="w-[min(90vw,640px)] max-h-[70vh] overflow-auto p-3">
-        <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-          {mode === "result" && (
-            <FrameTile
-              label={`Default${defaultFrameLabel ? ` — ${defaultFrameLabel}` : ""}`}
-              selected={value.kind === "default"}
-              onClick={() => select({ kind: "default" })}
-              palette={palette}
-              image={thumbnailImage}
-              frame={defaultFrame ?? null}
-              previewW={defaultFrame?.width ?? 160}
-              previewH={defaultFrame?.height ?? 144}
-            />
-          )}
+  const triggerButton = (
+    <Button variant="secondary" disabled={disabled} className="gap-2">
+      <span
+        className="inline-flex items-center justify-center overflow-hidden rounded border border-border"
+        style={{ width: TRIGGER_THUMB_PX, height: TRIGGER_THUMB_PX }}
+      >
+        {triggerFrame ? (
+          <FrameCornerCanvas
+            frame={triggerFrame}
+            palette={palette}
+            displaySize={TRIGGER_THUMB_PX}
+          />
+        ) : (
+          <FrameIcon className="size-4 text-muted-foreground" />
+        )}
+      </span>
+      <span className="truncate max-w-[12em]">{triggerLabel}</span>
+      <ChevronDown data-icon="inline-end" />
+    </Button>
+  );
+
+  const body = (
+    <>
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+        {mode === "result" && (
           <FrameTile
-            label="No frame"
-            selected={value.kind === "none"}
-            onClick={() => select({ kind: "none" })}
+            label={`Default${defaultFrameLabel ? ` — ${defaultFrameLabel}` : ""}`}
+            selected={value.kind === "default"}
+            onClick={() => select({ kind: "default" })}
             palette={palette}
             image={thumbnailImage}
-            frame={null}
-            previewW={HOLE_W}
-            previewH={HOLE_H}
+            frame={defaultFrame ?? null}
+            previewW={defaultFrame?.width ?? 160}
+            previewH={defaultFrame?.height ?? 144}
           />
-        </div>
-        {normals.length > 0 && (
-          <>
-            <h4 className="mt-3 mb-2 text-sm font-semibold">Normal frames</h4>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-              {normals.map((f) => (
-                <FrameTile
-                  key={f.id}
-                  label={frameDisplayName(f)}
-                  selected={value.kind === "frame" && value.id === f.id}
-                  onClick={() => select({ kind: "frame", id: f.id })}
-                  palette={palette}
-                  image={thumbnailImage}
-                  frame={f}
-                  previewW={160}
-                  previewH={144}
-                />
-              ))}
-            </div>
-          </>
         )}
-        {wilds.length > 0 && (
-          <>
-            <h4 className="mt-3 mb-2 text-sm font-semibold">Wild frames</h4>
-            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
-              {wilds.map((f) => (
-                <FrameTile
-                  key={f.id}
-                  label={frameDisplayName(f)}
-                  selected={value.kind === "frame" && value.id === f.id}
-                  onClick={() => select({ kind: "frame", id: f.id })}
-                  palette={palette}
-                  image={thumbnailImage}
-                  frame={f}
-                  previewW={f.width}
-                  previewH={f.height}
-                />
-              ))}
-            </div>
-          </>
-        )}
+        <FrameTile
+          label="No frame"
+          selected={value.kind === "none"}
+          onClick={() => select({ kind: "none" })}
+          palette={palette}
+          image={thumbnailImage}
+          frame={null}
+          previewW={HOLE_W}
+          previewH={HOLE_H}
+        />
+      </div>
+      {normals.length > 0 && (
+        <>
+          <h4 className="mt-3 mb-2 text-sm font-semibold">Normal frames</h4>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {normals.map((f) => (
+              <FrameTile
+                key={f.id}
+                label={frameDisplayName(f)}
+                selected={value.kind === "frame" && value.id === f.id}
+                onClick={() => select({ kind: "frame", id: f.id })}
+                palette={palette}
+                image={thumbnailImage}
+                frame={f}
+                previewW={160}
+                previewH={144}
+              />
+            ))}
+          </div>
+        </>
+      )}
+      {wilds.length > 0 && (
+        <>
+          <h4 className="mt-3 mb-2 text-sm font-semibold">Wild frames</h4>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+            {wilds.map((f) => (
+              <FrameTile
+                key={f.id}
+                label={frameDisplayName(f)}
+                selected={value.kind === "frame" && value.id === f.id}
+                onClick={() => select({ kind: "frame", id: f.id })}
+                palette={palette}
+                image={thumbnailImage}
+                frame={f}
+                previewW={f.width}
+                previewH={f.height}
+              />
+            ))}
+          </div>
+        </>
+      )}
+    </>
+  );
+
+  if (isMobile) {
+    return (
+      <Drawer open={open} onOpenChange={setOpen}>
+        <DrawerTrigger asChild>{triggerButton}</DrawerTrigger>
+        <DrawerContent>
+          <DrawerHeader>
+            <DrawerTitle>Select a frame</DrawerTitle>
+          </DrawerHeader>
+          <div className="flex-1 overflow-y-auto px-4 pb-4">{body}</div>
+        </DrawerContent>
+      </Drawer>
+    );
+  }
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger render={triggerButton} />
+      <PopoverContent className="w-[min(90vw,640px)] max-h-[70vh] overflow-auto p-3">
+        {body}
       </PopoverContent>
     </Popover>
   );

@@ -10,8 +10,18 @@ import {
   PopoverTitle,
   PopoverTrigger,
 } from "@/shadcn/components/popover";
+import {
+  Drawer,
+  DrawerContent,
+  DrawerDescription,
+  DrawerFooter,
+  DrawerHeader,
+  DrawerTitle,
+  DrawerTrigger,
+} from "@/shadcn/components/drawer";
 import { cn } from "@/shadcn/utils/utils";
 import { useLocalStorage } from "../hooks/useLocalStorage.js";
+import { useIsMobile } from "../hooks/useIsMobile.js";
 import { SAMPLE_PICTURES } from "../generated/SamplePictures.js";
 
 interface SamplePicturePickerProps {
@@ -47,6 +57,7 @@ export function SamplePicturePicker({
     string[] | null
   >(STORAGE_KEY, null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const isMobile = useIsMobile();
 
   useEffect(() => {
     if (disabled) setOpen(false);
@@ -129,7 +140,7 @@ export function SamplePicturePicker({
 
       if (files.length > 0) {
         setOpen(false);
-        // Defer so the popover's close animation paints before
+        // Defer so the popover/drawer close animation paints before
         // the (main-thread-blocking) pipeline starts processing.
         setTimeout(() => onImagesSelected(files), 150);
       }
@@ -140,6 +151,82 @@ export function SamplePicturePicker({
 
   const selectedCount = effectiveSelected.length;
   const totalCount = SAMPLE_PICTURES.length;
+
+  const grid = (
+    <div className="grid grid-cols-2 gap-2">
+      {SAMPLE_PICTURES.map((entry) => {
+        const isSelected = selectedSet.has(entry.filename);
+        return (
+          <button
+            key={entry.filename}
+            type="button"
+            onClick={() => toggle(entry.filename)}
+            aria-pressed={isSelected}
+            aria-label={`Toggle ${entry.filename}`}
+            className={cn(
+              "relative rounded-md border bg-muted p-1 ring-2 ring-inset ring-transparent transition-colors text-start",
+              isSelected && "ring-primary border-primary",
+            )}
+          >
+            <img
+              src={entry.url}
+              loading="lazy"
+              alt=""
+              className="block w-full h-24 object-contain"
+            />
+            <span className="block text-xs text-muted-foreground truncate mt-1">
+              {entry.filename}
+            </span>
+            {isSelected && (
+              <span
+                aria-hidden="true"
+                className="absolute top-1 end-1 inline-flex items-center justify-center rounded-full bg-primary text-primary-foreground size-5"
+              >
+                <Check className="size-3" />
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+
+  const submitButton = (
+    <Button
+      onClick={handleSubmit}
+      disabled={isSubmitting || selectedCount === 0}
+    >
+      {isSubmitting
+        ? "Loading…"
+        : `Process ${selectedCount} picture${
+            selectedCount === 1 ? "" : "s"
+          }`}
+    </Button>
+  );
+
+  const headerTitle = "Sample pictures";
+  const headerDescription = `${selectedCount} of ${totalCount} selected`;
+
+  if (isMobile) {
+    return (
+      <Drawer open={open} onOpenChange={setOpen}>
+        <DrawerTrigger asChild>
+          <Button variant="secondary" disabled={disabled}>
+            Sample Pictures
+            <ChevronDown data-icon="inline-end" />
+          </Button>
+        </DrawerTrigger>
+        <DrawerContent>
+          <DrawerHeader>
+            <DrawerTitle>{headerTitle}</DrawerTitle>
+            <DrawerDescription>{headerDescription}</DrawerDescription>
+          </DrawerHeader>
+          <div className="flex-1 overflow-y-auto px-4">{grid}</div>
+          <DrawerFooter>{submitButton}</DrawerFooter>
+        </DrawerContent>
+      </Drawer>
+    );
+  }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -155,60 +242,12 @@ export function SamplePicturePicker({
         className="flex flex-col w-[min(28rem,90vw)] max-h-[min(80vh,32rem)] gap-2"
       >
         <PopoverHeader>
-          <PopoverTitle>Sample pictures</PopoverTitle>
-          <PopoverDescription>
-            {selectedCount} of {totalCount} selected
-          </PopoverDescription>
+          <PopoverTitle>{headerTitle}</PopoverTitle>
+          <PopoverDescription>{headerDescription}</PopoverDescription>
         </PopoverHeader>
-        <div className="flex-1 overflow-y-auto">
-          <div className="grid grid-cols-2 gap-2">
-            {SAMPLE_PICTURES.map((entry) => {
-              const isSelected = selectedSet.has(entry.filename);
-              return (
-                <button
-                  key={entry.filename}
-                  type="button"
-                  onClick={() => toggle(entry.filename)}
-                  aria-pressed={isSelected}
-                  aria-label={`Toggle ${entry.filename}`}
-                  className={cn(
-                    "relative rounded-md border bg-muted p-1 ring-2 ring-inset ring-transparent transition-colors text-start",
-                    isSelected && "ring-primary border-primary",
-                  )}
-                >
-                  <img
-                    src={entry.url}
-                    loading="lazy"
-                    alt=""
-                    className="block w-full h-24 object-contain"
-                  />
-                  <span className="block text-xs text-muted-foreground truncate mt-1">
-                    {entry.filename}
-                  </span>
-                  {isSelected && (
-                    <span
-                      aria-hidden="true"
-                      className="absolute top-1 end-1 inline-flex items-center justify-center rounded-full bg-primary text-primary-foreground size-5"
-                    >
-                      <Check className="size-3" />
-                    </span>
-                  )}
-                </button>
-              );
-            })}
-          </div>
-        </div>
+        <div className="flex-1 overflow-y-auto">{grid}</div>
         <div className="flex items-center justify-end gap-2 pt-2 border-t">
-          <Button
-            onClick={handleSubmit}
-            disabled={isSubmitting || selectedCount === 0}
-          >
-            {isSubmitting
-              ? "Loading…"
-              : `Process ${selectedCount} picture${
-                  selectedCount === 1 ? "" : "s"
-                }`}
-          </Button>
+          {submitButton}
         </div>
       </PopoverContent>
     </Popover>
