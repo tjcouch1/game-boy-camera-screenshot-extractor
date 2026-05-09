@@ -108,7 +108,13 @@ function ProgressDisplay({ progress }: { progress: ProcessingProgress }) {
         </span>
         <span>{progress.overallProgress}%</span>
       </div>
-      <Progress value={progress.overallProgress} />
+      {/* Disable the indicator's width transition: the pipeline updates
+          progress in step-sized jumps that finish faster than the default
+          150ms ease, so the animated bar lags behind the shown percentage. */}
+      <Progress
+        value={progress.overallProgress}
+        className="[&_[data-slot=progress-indicator]]:transition-none"
+      />
       <div className="text-xs text-muted-foreground">
         Step: {progress.currentImageProgress.currentStep || "Starting..."}
       </div>
