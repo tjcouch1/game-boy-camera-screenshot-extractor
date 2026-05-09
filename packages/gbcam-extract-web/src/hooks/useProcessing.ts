@@ -140,19 +140,20 @@ export function useProcessing() {
 
   const calculateOverallProgress = (
     completedImages: number,
-    currentImageIndex: number,
     currentStep: string,
+    pct: number,
     totalImages: number,
   ): number => {
-    // Each image has STEPS_COUNT steps
-    // Progress is: (completed images * STEPS_COUNT + current step index) / (total images * STEPS_COUNT)
-    // Clamp to 0-100 to avoid negative values
-    const currentStepIndex = Math.max(0, PIPELINE_STEPS.indexOf(currentStep));
-    const stepsForCompletedImages = completedImages * STEPS_COUNT;
-    const stepsForCurrentImage = currentStepIndex;
+    if (totalImages === 0) return 0;
+    // stepIndex < 0 means no pipeline step is in progress (Loading or done).
+    // For an in-progress step, stepProgress = stepIndex + pct/100, so
+    // onProgress(step, 100) counts that step as fully completed (1 unit) — the
+    // previous version ignored pct and stalled at the step's start value.
+    const stepIndex = PIPELINE_STEPS.indexOf(currentStep);
+    const stepProgress = stepIndex >= 0 ? stepIndex + pct / 100 : 0;
     const totalSteps = totalImages * STEPS_COUNT;
     const progress =
-      (stepsForCompletedImages + stepsForCurrentImage) / totalSteps;
+      (completedImages * STEPS_COUNT + stepProgress) / totalSteps;
     return Math.max(0, Math.min(100, Math.round(progress * 100)));
   };
 
@@ -181,8 +182,8 @@ export function useProcessing() {
           },
           overallProgress: calculateOverallProgress(
             fileIndex,
-            fileIndex,
             "",
+            0,
             files.length,
           ),
         }));
@@ -204,12 +205,17 @@ export function useProcessing() {
                   : null,
                 overallProgress: calculateOverallProgress(
                   fileIndex,
-                  fileIndex,
                   step,
+                  pct,
                   files.length,
                 ),
               }));
             });
+            // Yield to the event loop so the browser can repaint between
+            // synchronous pipeline steps. Without this the bar appears frozen
+            // during a single image because warp/correct/etc. all run inside
+            // one JS turn. processPicture awaits this Promise.
+            return new Promise<void>((resolve) => setTimeout(resolve, 0));
           },
         });
         const processingTime = performance.now() - start;
@@ -220,8 +226,8 @@ export function useProcessing() {
         const completedCount = fileIndex + 1;
         const nextProgressValue = calculateOverallProgress(
           completedCount,
-          completedCount,
           "",
+          0,
           files.length,
         );
         setProgress((prev) => ({
@@ -243,8 +249,8 @@ export function useProcessing() {
         const completedCount = fileIndex + 1;
         const nextProgressValue = calculateOverallProgress(
           completedCount,
-          completedCount,
           "",
+          0,
           files.length,
         );
         setProgress((prev) => ({

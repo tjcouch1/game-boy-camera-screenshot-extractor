@@ -51,34 +51,37 @@ export async function processPicture(
 
   const collector = debug ? createDebugCollector() : undefined;
 
-  onProgress?.("locate", 0);
+  // Awaiting onProgress lets a caller return a Promise (e.g. a setTimeout(0)
+  // yield) so the browser can repaint between synchronous pipeline steps.
+  // Sync callers that return void produce a no-op `await undefined`.
+  await onProgress?.("locate", 0);
   const located = runLocate ? locate(input, { debug: collector }) : input;
-  onProgress?.("locate", 100);
+  await onProgress?.("locate", 100);
 
-  onProgress?.("warp", 0);
+  await onProgress?.("warp", 0);
   const warped = warp(located, { scale, debug: collector });
-  onProgress?.("warp", 100);
+  await onProgress?.("warp", 100);
 
-  onProgress?.("correct", 0);
+  await onProgress?.("correct", 0);
   const corrected = correct(warped, { scale, debug: collector });
-  onProgress?.("correct", 100);
+  await onProgress?.("correct", 100);
 
-  onProgress?.("crop", 0);
+  await onProgress?.("crop", 0);
   const cropped = crop(corrected, { scale, debug: collector });
-  onProgress?.("crop", 100);
+  await onProgress?.("crop", 100);
 
-  onProgress?.("sample", 0);
+  await onProgress?.("sample", 0);
   const sampled = sample(cropped, { scale, debug: collector });
-  onProgress?.("sample", 100);
+  await onProgress?.("sample", 100);
 
-  onProgress?.("quantize", 0);
+  await onProgress?.("quantize", 0);
   const quantized = quantize(sampled, {
     corrected,
     warped,
     scale,
     debug: collector,
   });
-  onProgress?.("quantize", 100);
+  await onProgress?.("quantize", 100);
 
   const result: PipelineResult = { grayscale: quantized };
   if (debug) {

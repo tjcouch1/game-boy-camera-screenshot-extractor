@@ -39,36 +39,26 @@ export function useUserPalettes() {
   // Create a new palette in edit mode with auto-generated unique name
   const createPaletteInEditMode = useCallback(
     (fromName: string, fromColors: [string, string, string, string]) => {
-      // Check if fromName already ends with " custom #" pattern
+      // Strip any existing " custom <N>" suffix so successive creates from the
+      // same source (e.g. pasting the same palette twice) don't collide.
       const customPatternMatch = fromName.match(/ custom (\d+)$/);
-      let baseName: string;
-      let nextNumber: number;
+      const baseName = customPatternMatch
+        ? fromName.substring(
+            0,
+            fromName.length - customPatternMatch[0].length,
+          )
+        : fromName;
 
-      if (customPatternMatch) {
-        // Extract base name and use the next number after the current one
-        baseName = fromName.substring(
-          0,
-          fromName.length - customPatternMatch[0].length,
-        );
-        const currentNumber = parseInt(customPatternMatch[1], 10);
-        nextNumber = currentNumber + 1;
-      } else {
-        // Use fromName as base, start numbering at 1
-        baseName = fromName;
-        // Find the highest number for "<baseName> custom #" pattern
-        const pattern = `${baseName} custom`;
-        const existingNumbers = palettes
-          .map((p) => {
-            if (p.name.startsWith(pattern)) {
-              const match = p.name.match(new RegExp(`^${pattern} (\\d+)$`));
-              return match ? parseInt(match[1], 10) : 0;
-            }
-            return 0;
-          })
-          .filter((n) => n > 0);
-        nextNumber =
-          existingNumbers.length > 0 ? Math.max(...existingNumbers) + 1 : 1;
-      }
+      const escapedBase = baseName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const numberPattern = new RegExp(`^${escapedBase} custom (\\d+)$`);
+      const existingNumbers = palettes
+        .map((p) => {
+          const m = p.name.match(numberPattern);
+          return m ? parseInt(m[1], 10) : 0;
+        })
+        .filter((n) => n > 0);
+      const nextNumber =
+        existingNumbers.length > 0 ? Math.max(...existingNumbers) + 1 : 1;
 
       const newPalette: UserPaletteEntry = {
         id: generateId(),

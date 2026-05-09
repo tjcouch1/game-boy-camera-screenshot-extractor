@@ -279,8 +279,9 @@ export function PalettePicker({
   };
 
   const handleSavePalette = (id: string) => {
-    if (editingPalette) {
-      const error = validatePaletteName(id, editingPalette.name);
+    const palette = userPalettes.find((p) => p.id === id);
+    if (palette) {
+      const error = validatePaletteName(id, palette.name);
       if (error) {
         setEditingPaletteErrors((prev) => ({ ...prev, [id]: error }));
         return;

@@ -16,7 +16,14 @@ export const INNER_LEFT = FRAME_THICK - 1; // 15
 export const INNER_RIGHT = FRAME_THICK + CAM_W; // 144
 
 // ─── Pipeline step registry ───
-export const STEP_ORDER = ["locate", "warp", "correct", "crop", "sample", "quantize"] as const;
+export const STEP_ORDER = [
+  "locate",
+  "warp",
+  "correct",
+  "crop",
+  "sample",
+  "quantize",
+] as const;
 export type StepName = (typeof STEP_ORDER)[number];
 
 // ─── Framework-agnostic image type ───
@@ -50,7 +57,7 @@ export interface PipelineResult {
 export interface PipelineOptions {
   scale?: number;
   debug?: boolean;
-  onProgress?: (step: string, pct: number) => void;
+  onProgress?: (step: string, pct: number) => void | Promise<void>;
   /**
    * Run the {@link locate} step before {@link warp} to find the Game Boy
    * Screen within a full phone photo and produce an upright crop.
