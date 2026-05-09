@@ -22,6 +22,8 @@
     "preview:host": "pnpm build:assets && vite preview --host",
     "serve": "node scripts/serve-dist.ts",
     "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
     "postinstall": "pnpm build:assets && node scripts/generate-licenses.ts"
   },
   "dependencies": {
@@ -54,7 +56,8 @@
     "tailwindcss": "^4.0.0",
     "typescript": "^5.7.0",
     "vite": "^6.0.0",
-    "vite-plugin-pwa": "^1.0.0"
+    "vite-plugin-pwa": "^1.0.0",
+    "vitest": "3.0.0"
   },
   "volta": {
     "extends": "../../package.json"
