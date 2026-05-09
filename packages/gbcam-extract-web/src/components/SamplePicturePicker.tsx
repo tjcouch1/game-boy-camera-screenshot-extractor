@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/shadcn/components/button";
@@ -47,6 +47,10 @@ export function SamplePicturePicker({
     string[] | null
   >(STORAGE_KEY, null);
   const [isSubmitting, setIsSubmitting] = useState(false);
+
+  useEffect(() => {
+    if (disabled) setOpen(false);
+  }, [disabled]);
 
   const validFilenames = useMemo(
     () => new Set(SAMPLE_PICTURES.map((s) => s.filename)),
@@ -119,7 +123,7 @@ export function SamplePicturePicker({
           `Failed to load ${errors.length} sample picture${
             errors.length === 1 ? "" : "s"
           }`,
-          { description: errors.join("\n") },
+          { description: errors.join("; ") },
         );
       }
 
