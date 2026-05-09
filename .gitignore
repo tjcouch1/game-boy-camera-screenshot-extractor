@@ -280,3 +280,7 @@ skills-lock.json
 # Frame sheets copied into web/public and the generated manifest
 packages/gbcam-extract-web/public/frames
 packages/gbcam-extract-web/src/generated/FrameSheets.ts
+
+# Sample pictures copied into web/public and the generated manifest
+packages/gbcam-extract-web/public/sample-pictures
+packages/gbcam-extract-web/src/generated/SamplePictures.ts
