@@ -1,5 +1,5 @@
 // packages/gbcam-extract-web/src/hooks/useFrameCatalog.ts
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { Frame, GBImageData } from "gbcam-extract";
 import {
   splitSheet,
@@ -8,19 +8,31 @@ import {
   appendDeduped,
 } from "gbcam-extract";
 import { FRAME_SHEETS } from "../generated/FrameSheets.js";
+import { useUserFrames } from "./useUserFrames.js";
 
 export type FrameCatalogStatus = "loading" | "ready" | "error";
 
 export interface FrameCatalog {
   status: FrameCatalogStatus;
   frames: Frame[];
-  /** Map id -> Frame for O(1) lookup. */
+  /** Map id -> Frame for O(1) lookup. Includes both built-in and user frames. */
   getFrameById(id: string): Frame | undefined;
+  /** Set of frame IDs originating from user uploads (used to render delete buttons). */
+  userFrameIds: Set<string>;
+  /** addFrames from useUserFrames, exposed for the picker's upload flow. */
+  addUserFrames: (frames: Frame[]) => { added: number };
+  /** deleteFrame from useUserFrames, exposed for the picker's delete flow. */
+  deleteUserFrame: (id: string) => void;
   error?: string;
 }
 
-let cached: { frames: Frame[]; byId: Map<string, Frame> } | null = null;
-let pending: Promise<{ frames: Frame[]; byId: Map<string, Frame> }> | null = null;
+interface BuiltIn {
+  frames: Frame[];
+  byId: Map<string, Frame>;
+}
+
+let cachedBuiltIns: BuiltIn | null = null;
+let pendingBuiltIns: Promise<BuiltIn> | null = null;
 
 async function fetchSheet(url: string): Promise<GBImageData> {
   const res = await fetch(url);
@@ -47,7 +59,7 @@ async function fetchSheet(url: string): Promise<GBImageData> {
   }
 }
 
-async function buildCatalog(): Promise<{ frames: Frame[]; byId: Map<string, Frame> }> {
+async function buildBuiltIns(): Promise<BuiltIn> {
   const sheetFrames: Frame[] = [];
   const individualFrames: Frame[] = [];
   for (const entry of FRAME_SHEETS) {
@@ -69,39 +81,35 @@ async function buildCatalog(): Promise<{ frames: Frame[]; byId: Map<string, Fram
 }
 
 export function useFrameCatalog(): FrameCatalog {
-  const [state, setState] = useState<{
+  const userFrames = useUserFrames();
+  const [builtIns, setBuiltIns] = useState<{
     status: FrameCatalogStatus;
-    frames: Frame[];
-    byId: Map<string, Frame>;
+    value: BuiltIn;
     error?: string;
   }>(() =>
-    cached
-      ? { status: "ready", frames: cached.frames, byId: cached.byId }
-      : { status: "loading", frames: [], byId: new Map() },
+    cachedBuiltIns
+      ? { status: "ready", value: cachedBuiltIns }
+      : {
+          status: "loading",
+          value: { frames: [], byId: new Map() },
+        },
   );
 
   useEffect(() => {
-    if (cached) return;
+    if (cachedBuiltIns) return;
     let mounted = true;
-    if (!pending) pending = buildCatalog();
-    pending
+    if (!pendingBuiltIns) pendingBuiltIns = buildBuiltIns();
+    pendingBuiltIns
       .then((result) => {
-        cached = result;
-        if (mounted) {
-          setState({
-            status: "ready",
-            frames: result.frames,
-            byId: result.byId,
-          });
-        }
+        cachedBuiltIns = result;
+        if (mounted) setBuiltIns({ status: "ready", value: result });
       })
       .catch((err) => {
-        pending = null;
+        pendingBuiltIns = null;
         if (mounted) {
-          setState({
+          setBuiltIns({
             status: "error",
-            frames: [],
-            byId: new Map(),
+            value: { frames: [], byId: new Map() },
             error: err instanceof Error ? err.message : String(err),
           });
         }
@@ -111,10 +119,45 @@ export function useFrameCatalog(): FrameCatalog {
     };
   }, []);
 
+  // Merge user frames into the built-ins on every render. appendDeduped
+  // preserves the built-in order and drops any user upload that duplicates an
+  // existing built-in by fingerprint.
+  const merged = useMemo(() => {
+    const baseFrames = builtIns.value.frames;
+    if (userFrames.decodedFrames.length === 0) {
+      return {
+        frames: baseFrames,
+        byId: builtIns.value.byId,
+        userFrameIds: new Set<string>(),
+      };
+    }
+    const userIds = new Set(userFrames.decodedFrames.map((f) => f.id));
+    const frames = appendDeduped(baseFrames, userFrames.decodedFrames);
+    const byId = new Map(frames.map((f) => [f.id, f] as const));
+    return { frames, byId, userFrameIds: userIds };
+  }, [
+    builtIns.value.frames,
+    builtIns.value.byId,
+    userFrames.decodedFrames,
+  ]);
+
+  // Composite status: built-ins must be loaded; user frames decoding while we
+  // already have built-ins shouldn't block the picker (the merged view is
+  // valid without the not-yet-decoded uploads).
+  const status: FrameCatalogStatus =
+    builtIns.status === "error"
+      ? "error"
+      : builtIns.status === "loading"
+        ? "loading"
+        : "ready";
+
   return {
-    status: state.status,
-    frames: state.frames,
-    error: state.error,
-    getFrameById: (id) => state.byId.get(id),
+    status,
+    frames: merged.frames,
+    error: builtIns.error,
+    getFrameById: (id) => merged.byId.get(id),
+    userFrameIds: merged.userFrameIds,
+    addUserFrames: userFrames.addFrames,
+    deleteUserFrame: userFrames.deleteFrame,
   };
 }
