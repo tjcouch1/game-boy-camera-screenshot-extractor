@@ -49,6 +49,12 @@ interface ResultCardProps {
   defaultFrame: Frame | null;
   /** Disable the FramePicker (e.g. while the catalog is still loading). */
   framePickerDisabled?: boolean;
+  /** IDs of user-uploaded frames; threaded through to the FramePicker. */
+  userFrameIds?: Set<string>;
+  /** Persist new user frames; threaded through to the FramePicker. */
+  onAddUserFrames?: (frames: Frame[]) => { added: number };
+  /** Delete a user frame; threaded through to the FramePicker. */
+  onDeleteUserFrame?: (id: string) => void;
   onDelete?: () => void;
 }
 
@@ -67,6 +73,9 @@ export function ResultCard({
   defaultFrameLabel,
   defaultFrame,
   framePickerDisabled,
+  userFrameIds,
+  onAddUserFrames,
+  onDeleteUserFrame,
   onDelete,
 }: ResultCardProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -221,6 +230,9 @@ export function ResultCard({
             defaultFrame={defaultFrame}
             image={result.grayscale}
             disabled={framePickerDisabled}
+            userFrameIds={userFrameIds}
+            onAddUserFrames={onAddUserFrames}
+            onDeleteUserFrame={onDeleteUserFrame}
           />
         </div>
       </CardContent>

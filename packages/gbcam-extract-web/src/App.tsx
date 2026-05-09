@@ -524,6 +524,9 @@ export default function App() {
                       frames={catalog.frames}
                       mode="default"
                       disabled={catalog.status !== "ready"}
+                      userFrameIds={catalog.userFrameIds}
+                      onAddUserFrames={catalog.addUserFrames}
+                      onDeleteUserFrame={catalog.deleteUserFrame}
                     />
                   </Field>
                 </div>
@@ -546,6 +549,9 @@ export default function App() {
                         defaultFrameLabel={defaultFrameLabel}
                         defaultFrame={resolvedDefaultFrame}
                         framePickerDisabled={catalog.status !== "ready"}
+                        userFrameIds={catalog.userFrameIds}
+                        onAddUserFrames={catalog.addUserFrames}
+                        onDeleteUserFrame={catalog.deleteUserFrame}
                         onDelete={() => handleDeleteResult(r.filename)}
                       />
                       {(r.result.intermediates || r.result.debug) && (
@@ -680,6 +686,9 @@ export default function App() {
                                 defaultFrameLabel={defaultFrameLabel}
                                 defaultFrame={resolvedDefaultFrame}
                                 framePickerDisabled={catalog.status !== "ready"}
+                                userFrameIds={catalog.userFrameIds}
+                                onAddUserFrames={catalog.addUserFrames}
+                                onDeleteUserFrame={catalog.deleteUserFrame}
                                 onDelete={() =>
                                   deleteFromHistory(batch.id, idx)
                                 }

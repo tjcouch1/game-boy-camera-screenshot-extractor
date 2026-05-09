@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Frame, GBImageData } from "gbcam-extract";
-import { composeFrame, applyPalette } from "gbcam-extract";
+import { composeFrame, applyPalette, appendDeduped } from "gbcam-extract";
 import {
   Popover,
   PopoverContent,
@@ -13,12 +13,33 @@ import {
   DrawerTitle,
   DrawerTrigger,
 } from "@/shadcn/components/drawer";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/shadcn/components/dialog";
 import { Button } from "@/shadcn/components/button";
-import { ChevronDown, Frame as FrameIcon } from "lucide-react";
+import {
+  ChevronDown,
+  Frame as FrameIcon,
+  Trash2,
+  Upload,
+} from "lucide-react";
+import { toast } from "sonner";
 import { cn } from "@/shadcn/utils/utils";
 import { useIsMobile } from "../hooks/useIsMobile.js";
 import type { FrameSelection } from "../types/frame-selection.js";
 import { frameDisplayName } from "../utils/frame-display.js";
+import {
+  detectAndLoadFrames,
+  disambiguateStem,
+  fileToGBImageData,
+  sanitizeFilenameStem,
+} from "../utils/detectFrames.js";
 
 const HOLE_W = 128;
 const HOLE_H = 112;
@@ -45,6 +66,12 @@ interface FramePickerProps {
    */
   image?: GBImageData;
   disabled?: boolean;
+  /** IDs of frames originating from user uploads. Tiles for these get a delete button. */
+  userFrameIds?: Set<string>;
+  /** Persist a batch of new user-uploaded frames. Called from the upload flow. */
+  onAddUserFrames?: (frames: Frame[]) => { added: number };
+  /** Remove a previously-uploaded frame by ID. */
+  onDeleteUserFrame?: (id: string) => void;
 }
 
 /** Build a dummy 128×112 lightest-color image for picker thumbnails. */
@@ -60,6 +87,7 @@ function buildEmptyImage(): GBImageData {
 }
 
 const EMPTY_IMAGE = buildEmptyImage();
+const EMPTY_USER_IDS: Set<string> = new Set();
 
 /** Render a frame (or solid lightest color when no frame) onto a canvas. */
 function FrameCanvas({
@@ -197,6 +225,9 @@ export function FramePicker({
   defaultFrame,
   image,
   disabled,
+  userFrameIds,
+  onAddUserFrames,
+  onDeleteUserFrame,
 }: FramePickerProps) {
   const framesById = useMemo(() => new Map(frames.map((f) => [f.id, f] as const)), [frames]);
   const triggerFrame: Frame | null =
@@ -208,11 +239,34 @@ export function FramePicker({
   const triggerLabel = selectionLabel(value, framesById, defaultFrameLabel);
   const thumbnailImage = image ?? EMPTY_IMAGE;
 
-  const normals = useMemo(() => frames.filter((f) => f.type === "normal"), [frames]);
-  const wilds = useMemo(() => frames.filter((f) => f.type === "wild"), [frames]);
+  // Custom-frames support is enabled when the parent passes both the upload
+  // and delete handlers. The picker still renders fine without them — the
+  // section just doesn't appear (used in places where uploading isn't
+  // appropriate, e.g. nested pickers).
+  const customEnabled = Boolean(onAddUserFrames && onDeleteUserFrame);
+  const userIds = userFrameIds ?? EMPTY_USER_IDS;
+
+  const normals = useMemo(
+    () => frames.filter((f) => f.type === "normal" && !userIds.has(f.id)),
+    [frames, userIds],
+  );
+  const wilds = useMemo(
+    () => frames.filter((f) => f.type === "wild" && !userIds.has(f.id)),
+    [frames, userIds],
+  );
+  const customs = useMemo(
+    () => frames.filter((f) => userIds.has(f.id)),
+    [frames, userIds],
+  );
 
   const [open, setOpen] = useState(false);
   const isMobile = useIsMobile();
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const pendingDeleteFrame = pendingDeleteId
+    ? framesById.get(pendingDeleteId) ?? null
+    : null;
+
   const select = useCallback(
     (next: FrameSelection) => {
       onChange(next);
@@ -220,6 +274,84 @@ export function FramePicker({
     },
     [onChange],
   );
+
+  const handleUploadClick = useCallback(() => {
+    fileInputRef.current?.click();
+  }, []);
+
+  const handleFiles = useCallback(
+    async (fileList: FileList | null) => {
+      if (!fileList || fileList.length === 0 || !onAddUserFrames) return;
+      const files = Array.from(fileList);
+      // Reset the input so re-uploading the same filename re-triggers onChange.
+      if (fileInputRef.current) fileInputRef.current.value = "";
+
+      // Build a running set of "taken" stems so multi-file uploads disambiguate
+      // against each other and against the existing catalog.
+      const takenStems = new Set(frames.map((f) => f.sheetStem));
+      const survivors: Frame[] = [];
+      let totalDuplicates = 0;
+      let runningCatalog = frames;
+
+      for (const file of files) {
+        try {
+          const image = await fileToGBImageData(file);
+          const baseStem = sanitizeFilenameStem(file.name) || "custom-frame";
+          const stem = disambiguateStem(baseStem, takenStems);
+          takenStems.add(stem);
+          const detected = detectAndLoadFrames(image, stem);
+          // Dedup against the running catalog (built-in + previously-uploaded
+          // + earlier survivors in this batch). appendDeduped drops by
+          // fingerprint, so pixel-identical re-uploads are detected.
+          const before = runningCatalog.length;
+          const merged = appendDeduped(runningCatalog, detected);
+          const newlyKept = merged.slice(before);
+          totalDuplicates += detected.length - newlyKept.length;
+          survivors.push(...newlyKept);
+          runningCatalog = merged;
+        } catch (err) {
+          const reason =
+            err instanceof Error ? err.message : "Unknown error.";
+          toast.error(`${file.name}: ${reason}`);
+        }
+      }
+
+      if (survivors.length > 0) {
+        try {
+          const { added } = onAddUserFrames(survivors);
+          const parts: string[] = [];
+          parts.push(`Added ${added} frame${added === 1 ? "" : "s"}.`);
+          if (totalDuplicates > 0) {
+            parts.push(
+              `Skipped ${totalDuplicates} duplicate${totalDuplicates === 1 ? "" : "s"}.`,
+            );
+          }
+          toast.success(parts.join(" "));
+        } catch (err) {
+          console.error("FramePicker: addUserFrames failed", err);
+          if (err instanceof DOMException && err.name === "QuotaExceededError") {
+            toast.error(
+              "Out of storage. Delete some frames or images and try again.",
+            );
+          } else {
+            toast.error("Failed to save frames.");
+          }
+        }
+      } else if (totalDuplicates > 0) {
+        toast.info(
+          `Skipped ${totalDuplicates} duplicate${totalDuplicates === 1 ? "" : "s"}.`,
+        );
+      }
+    },
+    [frames, onAddUserFrames],
+  );
+
+  const confirmDelete = useCallback(() => {
+    if (pendingDeleteId && onDeleteUserFrame) {
+      onDeleteUserFrame(pendingDeleteId);
+    }
+    setPendingDeleteId(null);
+  }, [pendingDeleteId, onDeleteUserFrame]);
 
   const triggerButton = (
     <Button variant="secondary" disabled={disabled} className="gap-2">
@@ -308,30 +440,114 @@ export function FramePicker({
           </div>
         </>
       )}
+      {customEnabled && (
+        <>
+          <div className="mt-3 mb-2 flex items-center justify-between gap-2">
+            <h4 className="text-sm font-semibold">Custom frames</h4>
+            <Button
+              variant="secondary"
+              size="sm"
+              onClick={handleUploadClick}
+            >
+              <Upload data-icon="inline-start" />
+              Upload
+            </Button>
+          </div>
+          {customs.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              Upload a Game Boy Camera frame PNG. Sheets and individual frames
+              are both supported.
+            </p>
+          ) : (
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">
+              {customs.map((f) => (
+                <FrameTile
+                  key={f.id}
+                  label={frameDisplayName(f)}
+                  selected={value.kind === "frame" && value.id === f.id}
+                  onClick={() => select({ kind: "frame", id: f.id })}
+                  palette={palette}
+                  image={thumbnailImage}
+                  frame={f}
+                  previewW={f.width}
+                  previewH={f.height}
+                  onDelete={() => setPendingDeleteId(f.id)}
+                />
+              ))}
+            </div>
+          )}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            multiple
+            className="hidden"
+            onChange={(e) => handleFiles(e.target.files)}
+          />
+        </>
+      )}
     </>
+  );
+
+  // The delete confirmation Dialog is rendered as a sibling so it survives the
+  // popover/drawer close (closing the picker shouldn't dismiss the dialog).
+  const deleteDialog = (
+    <Dialog
+      open={pendingDeleteId !== null}
+      onOpenChange={(o) => {
+        if (!o) setPendingDeleteId(null);
+      }}
+    >
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Delete this frame?</DialogTitle>
+          <DialogDescription>
+            {pendingDeleteFrame
+              ? `"${frameDisplayName(pendingDeleteFrame)}" will be removed. This can't be undone.`
+              : "This can't be undone."}
+          </DialogDescription>
+        </DialogHeader>
+        <DialogFooter>
+          <DialogClose render={<Button variant="secondary" />}>
+            Cancel
+          </DialogClose>
+          <DialogClose
+            render={<Button variant="destructive" onClick={confirmDelete} />}
+          >
+            Delete
+          </DialogClose>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 
   if (isMobile) {
     return (
-      <Drawer open={open} onOpenChange={setOpen}>
-        <DrawerTrigger asChild>{triggerButton}</DrawerTrigger>
-        <DrawerContent>
-          <DrawerHeader>
-            <DrawerTitle>Select a frame</DrawerTitle>
-          </DrawerHeader>
-          <div className="flex-1 overflow-y-auto px-4 pb-4">{body}</div>
-        </DrawerContent>
-      </Drawer>
+      <>
+        <Drawer open={open} onOpenChange={setOpen}>
+          <DrawerTrigger asChild>{triggerButton}</DrawerTrigger>
+          <DrawerContent>
+            <DrawerHeader>
+              <DrawerTitle>Select a frame</DrawerTitle>
+            </DrawerHeader>
+            <div className="flex-1 overflow-y-auto px-4 pb-4">{body}</div>
+          </DrawerContent>
+        </Drawer>
+        {deleteDialog}
+      </>
     );
   }
 
   return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger render={triggerButton} />
-      <PopoverContent className="w-[min(90vw,640px)] max-h-[70vh] overflow-auto p-3">
-        {body}
-      </PopoverContent>
-    </Popover>
+    <>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger render={triggerButton} />
+        <PopoverContent className="w-[min(90vw,640px)] max-h-[70vh] overflow-auto p-3">
+          {body}
+        </PopoverContent>
+      </Popover>
+      {deleteDialog}
+    </>
   );
 }
 
@@ -344,6 +560,7 @@ function FrameTile({
   frame,
   previewW,
   previewH,
+  onDelete,
 }: {
   label: string;
   selected: boolean;
@@ -353,7 +570,52 @@ function FrameTile({
   frame: Frame | null;
   previewW: number;
   previewH: number;
+  /** When set, render a small Trash2 button at top-end that calls this. */
+  onDelete?: () => void;
 }) {
+  // The tile uses a wrapper <div> rather than a single <button> when a delete
+  // affordance is needed: nesting buttons is invalid HTML, so the selection
+  // click target becomes an inner button and the trash sits as its sibling.
+  if (onDelete) {
+    return (
+      <div
+        className={cn(
+          "relative flex flex-col items-center justify-end gap-1 rounded border bg-card p-2 text-xs",
+          selected && "ring-2 ring-primary",
+        )}
+      >
+        <button
+          type="button"
+          onClick={onClick}
+          className="flex flex-col items-center justify-end gap-1 w-full hover:bg-accent rounded"
+        >
+          <FrameCanvas
+            frame={frame}
+            palette={palette}
+            image={image}
+            width={previewW}
+            height={previewH}
+            className="max-w-full h-auto rounded border border-border"
+          />
+          <span className="truncate w-full text-center">{label}</span>
+        </button>
+        <Button
+          type="button"
+          variant="secondary"
+          size="icon"
+          aria-label="Delete frame"
+          onClick={(e) => {
+            e.stopPropagation();
+            onDelete();
+          }}
+          className="absolute top-2 end-2 size-7"
+        >
+          <Trash2 />
+        </Button>
+      </div>
+    );
+  }
+
   return (
     <button
       type="button"
