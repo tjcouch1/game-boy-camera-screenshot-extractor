@@ -91,12 +91,15 @@ A new helper `isUserFrame(frame, userEntries)` (exported from the hook) lets the
 A new helper `detectAndLoadFrames(image: GBImageData, stem: string): Frame[]` lives in `packages/gbcam-extract-web/src/utils/detectFrames.ts`:
 
 1. Try `splitSheet(image, stem)`.
-   - If it returns ≥1 frame → return them.
-2. Else try `loadIndividualFrame(image, stem)`.
+   - If it returns ≥ 2 frames → it's a real sheet; return them.
+2. Otherwise (0 or 1 frames) try `loadIndividualFrame(image, stem)`.
    - On success → wrap the single frame in an array.
-3. Else throw an `Error` with a human-readable message.
+   - On failure with exactly one splitSheet result → return that result (defensive: a single-frame sheet with a non-white, non-transparent background can defeat `loadIndividualFrame`'s hole search).
+   - On failure with no splitSheet result → throw.
 
-This is web-package-local because it only orchestrates existing exports from `gbcam-extract`. Each call's result has its `kind` overwritten to `"individual"` before being passed to `addFrames`.
+`splitSheet`'s tight-bbox recomputation scans outward from the hole along a single row/column, which clips individual frames whose bezel narrows beyond that scan (e.g. a Game Boy Pocket frame with a label area below the screen). `loadIndividualFrame` uses the full image dimensions, so it's preferred whenever splitSheet's output is ambiguous.
+
+This helper is web-package-local because it only orchestrates existing exports from `gbcam-extract`. Each call's result has its `kind` overwritten to `"individual"` before being passed to `addFrames`.
 
 ### Filename → stem
 

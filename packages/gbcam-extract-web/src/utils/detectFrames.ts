@@ -64,6 +64,17 @@ export async function fileToGBImageData(file: File): Promise<GBImageData> {
  * return the resulting `Frame[]`. Always forces `kind: "individual"` on the
  * returned frames — see `UserFrameEntry` doc for the rationale.
  *
+ * Dispatch rule:
+ *   - splitSheet ≥ 2 frames → real sheet, trust it.
+ *   - splitSheet ≤ 1 frame → ambiguous. Prefer loadIndividualFrame, because
+ *     splitSheet's tight-bbox recomputation scans outward from the hole along
+ *     a single row/column and clips individual frames whose bezel narrows
+ *     beyond that scan (e.g. Game Boy Pocket frames with a label area below
+ *     the screen). loadIndividualFrame uses the full image dimensions and
+ *     preserves the entire frame body.
+ *   - If both paths fail, fall back to splitSheet's single result if any, then
+ *     finally throw.
+ *
  * Throws an `Error` with a human-readable message if neither path produces a
  * frame so the caller can surface it as a toast.
  */
@@ -71,16 +82,13 @@ export function detectAndLoadFrames(
   image: GBImageData,
   stem: string,
 ): Frame[] {
-  // Try sheet first. splitSheet returns [] when no frames are detected; treat
-  // that as "not a sheet" and fall through. Any thrown error is also swallowed
-  // here so we still get a chance at the individual-frame path.
   let sheetFrames: Frame[] = [];
   try {
     sheetFrames = splitSheet(image, stem);
   } catch {
     sheetFrames = [];
   }
-  if (sheetFrames.length > 0) {
+  if (sheetFrames.length >= 2) {
     return sheetFrames.map((f) => ({ ...f, kind: "individual" as const }));
   }
 
@@ -88,6 +96,12 @@ export function detectAndLoadFrames(
     const f = loadIndividualFrame(image, stem);
     return [{ ...f, kind: "individual" as const }];
   } catch {
+    // Defensive fallback: a single-frame sheet whose body has a non-white,
+    // non-transparent background can defeat loadIndividualFrame's hole search
+    // even though splitSheet was happy. Use what we have rather than throw.
+    if (sheetFrames.length === 1) {
+      return sheetFrames.map((f) => ({ ...f, kind: "individual" as const }));
+    }
     throw new Error("Couldn't detect a frame in this image.");
   }
 }
