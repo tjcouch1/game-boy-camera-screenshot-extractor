@@ -142,6 +142,7 @@ export default function App() {
     updateSettings: updateHistorySettings,
     settings: historySettings,
     updateFrameOverride: updateHistoryFrameOverride,
+    purgeFrameOverride: purgeHistoryFrameOverride,
   } = useImageHistory();
   const { settings, updateSetting } = useAppSettings();
   const debug = settings.debug;
@@ -280,6 +281,41 @@ export default function App() {
       setCurrentResults((prev) => prev.filter((r) => r.filename !== filename));
     },
     [setCurrentResults],
+  );
+
+  // Deleting a user frame must also scrub every selection that pointed at it:
+  // the global default reverts to FRAME_SELECTION_NONE (the factory default),
+  // and any per-result override resets to {kind: "default"} so it follows the
+  // global default. History overrides of {kind: "default"} need no scrubbing —
+  // they already inherit from the updated global default.
+  const handleDeleteUserFrame = useCallback(
+    (id: string) => {
+      catalog.deleteUserFrame(id);
+
+      if (
+        settings.defaultFrame?.kind === "frame" &&
+        settings.defaultFrame.id === id
+      ) {
+        updateSetting("defaultFrame", FRAME_SELECTION_NONE);
+      }
+
+      setCurrentResults((prev) =>
+        prev.map((r) =>
+          r.frameOverride?.kind === "frame" && r.frameOverride.id === id
+            ? { ...r, frameOverride: FRAME_SELECTION_DEFAULT }
+            : r,
+        ),
+      );
+
+      purgeHistoryFrameOverride(id);
+    },
+    [
+      catalog,
+      settings.defaultFrame,
+      updateSetting,
+      setCurrentResults,
+      purgeHistoryFrameOverride,
+    ],
   );
 
   return (
@@ -526,7 +562,7 @@ export default function App() {
                       disabled={catalog.status !== "ready"}
                       userFrameIds={catalog.userFrameIds}
                       onAddUserFrames={catalog.addUserFrames}
-                      onDeleteUserFrame={catalog.deleteUserFrame}
+                      onDeleteUserFrame={handleDeleteUserFrame}
                     />
                   </Field>
                 </div>
@@ -551,7 +587,7 @@ export default function App() {
                         framePickerDisabled={catalog.status !== "ready"}
                         userFrameIds={catalog.userFrameIds}
                         onAddUserFrames={catalog.addUserFrames}
-                        onDeleteUserFrame={catalog.deleteUserFrame}
+                        onDeleteUserFrame={handleDeleteUserFrame}
                         onDelete={() => handleDeleteResult(r.filename)}
                       />
                       {(r.result.intermediates || r.result.debug) && (
@@ -688,7 +724,7 @@ export default function App() {
                                 framePickerDisabled={catalog.status !== "ready"}
                                 userFrameIds={catalog.userFrameIds}
                                 onAddUserFrames={catalog.addUserFrames}
-                                onDeleteUserFrame={catalog.deleteUserFrame}
+                                onDeleteUserFrame={handleDeleteUserFrame}
                                 onDelete={() =>
                                   deleteFromHistory(batch.id, idx)
                                 }

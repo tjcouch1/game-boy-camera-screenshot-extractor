@@ -220,6 +220,24 @@ export function useImageHistory() {
     [],
   );
 
+  /**
+   * Reset any history result whose frameOverride points to `frameId` back to
+   * `{kind: "default"}` so it follows the global default. Called when a user
+   * frame is deleted so stale references don't render as "unknown frame".
+   */
+  const purgeFrameOverride = useCallback((frameId: string) => {
+    setHistory((prev) =>
+      prev.map((batch) => ({
+        ...batch,
+        results: batch.results.map((r) =>
+          r.frameOverride?.kind === "frame" && r.frameOverride.id === frameId
+            ? { ...r, frameOverride: { kind: "default" } }
+            : r,
+        ),
+      })),
+    );
+  }, []);
+
   return {
     history,
     settings,
@@ -232,5 +250,6 @@ export function useImageHistory() {
     updateSettings,
     pruneHistory,
     updateFrameOverride,
+    purgeFrameOverride,
   };
 }
