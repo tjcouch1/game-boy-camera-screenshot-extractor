@@ -15,7 +15,13 @@ export interface UserFrameEntry {
   id: string; // "user-frame-<timestamp>-<rand>"
   /** Sanitized filename stem; used as Frame.sheetStem and to derive the display name. */
   sheetStem: string;
+  /** Sheet stems this frame is known by (populated by dedupe). */
+  aliasStems: string[];
   type: "normal" | "wild";
+  /** "sheet" or "individual" origin. */
+  kind: "sheet" | "individual";
+  /** 1-based index within the sheet (1 for individuals). */
+  index: number;
   width: number;
   height: number;
   holeX: number;
@@ -76,10 +82,10 @@ export function pngDataUrlToFrame(entry: UserFrameEntry): Promise<Frame> {
         const frame: Frame = {
           id: entry.id,
           sheetStem: entry.sheetStem,
-          aliasStems: [entry.sheetStem],
+          aliasStems: entry.aliasStems || [entry.sheetStem],
           type: entry.type,
-          kind: "individual",
-          index: 1,
+          kind: entry.kind || "individual",
+          index: entry.index || 1,
           width: entry.width,
           height: entry.height,
           pixels,

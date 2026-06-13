@@ -562,6 +562,7 @@ export default function App() {
                       disabled={catalog.status !== "ready"}
                       userFrameIds={catalog.userFrameIds}
                       onAddUserFrames={catalog.addUserFrames}
+                      onAddOriginalFrames={catalog.addOriginalFrames}
                       onDeleteUserFrame={handleDeleteUserFrame}
                     />
                   </Field>

@@ -41,6 +41,7 @@ const ADDITIONAL_LICENSES_PREFIX = "00_";
 interface LicenseData extends ModuleInfos {}
 
 interface AugmentedLicense {
+  id?: string;
   name: string;
   version: string;
   licenses: string | string[];
@@ -273,8 +274,10 @@ function generateHtmlLicensesPage(
           ? `<div class="package-info">${infoLines.join("<br>")}</div>`
           : "";
 
+      const entryId = license.id || license.name.toLowerCase().replace(/\s+/g, "-");
+
       return `
-    <div class="license-entry">
+    <div class="license-entry" id="${entryId}">
       <h3>${packageLink}</h3>
       <p class="license-type">${license.licenses || "Unknown"}</p>
       ${license.copyright ? `<p class="copyright">${license.copyright}</p>` : ""}

@@ -53,6 +53,8 @@ interface ResultCardProps {
   userFrameIds?: Set<string>;
   /** Persist new user frames; threaded through to the FramePicker. */
   onAddUserFrames?: (frames: Frame[]) => { added: number };
+  /** Persist new original frames; threaded through to the FramePicker. */
+  onAddOriginalFrames?: (frames: Frame[]) => { added: number };
   /** Delete a user frame; threaded through to the FramePicker. */
   onDeleteUserFrame?: (id: string) => void;
   onDelete?: () => void;
@@ -75,6 +77,7 @@ export function ResultCard({
   framePickerDisabled,
   userFrameIds,
   onAddUserFrames,
+  onAddOriginalFrames,
   onDeleteUserFrame,
   onDelete,
 }: ResultCardProps) {
@@ -232,6 +235,7 @@ export function ResultCard({
             disabled={framePickerDisabled}
             userFrameIds={userFrameIds}
             onAddUserFrames={onAddUserFrames}
+            onAddOriginalFrames={onAddOriginalFrames}
             onDeleteUserFrame={onDeleteUserFrame}
           />
         </div>

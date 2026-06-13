@@ -61,8 +61,7 @@ export async function fileToGBImageData(file: File): Promise<GBImageData> {
 
 /**
  * Detect whether `image` is a sheet (multi-frame) or an individual frame and
- * return the resulting `Frame[]`. Always forces `kind: "individual"` on the
- * returned frames — see `UserFrameEntry` doc for the rationale.
+ * return the resulting `Frame[]`.
  *
  * Dispatch rule:
  *   - splitSheet ≥ 2 frames → real sheet, trust it.
@@ -89,18 +88,18 @@ export function detectAndLoadFrames(
     sheetFrames = [];
   }
   if (sheetFrames.length >= 2) {
-    return sheetFrames.map((f) => ({ ...f, kind: "individual" as const }));
+    return sheetFrames;
   }
 
   try {
     const f = loadIndividualFrame(image, stem);
-    return [{ ...f, kind: "individual" as const }];
+    return [f];
   } catch {
     // Defensive fallback: a single-frame sheet whose body has a non-white,
     // non-transparent background can defeat loadIndividualFrame's hole search
     // even though splitSheet was happy. Use what we have rather than throw.
     if (sheetFrames.length === 1) {
-      return sheetFrames.map((f) => ({ ...f, kind: "individual" as const }));
+      return sheetFrames;
     }
     throw new Error("Couldn't detect a frame in this image.");
   }

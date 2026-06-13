@@ -7,63 +7,42 @@ import {
   type UserFrameEntry,
 } from "./frameCodec.js";
 
-const STORAGE_KEY = "gbcam-user-frames";
+const STORAGE_KEY = "gbcam-original-frames";
 const STORAGE_VERSION = "1";
-const STORAGE_VERSION_KEY = "gbcam-user-frames-version";
+const STORAGE_VERSION_KEY = "gbcam-original-frames-version";
 
-export type UserFramesStatus = "loading" | "ready" | "error";
+export type OriginalFramesStatus = "loading" | "ready" | "error";
 
-export interface UseUserFramesResult {
+export interface UseOriginalFramesResult {
   entries: UserFrameEntry[];
   decodedFrames: Frame[];
-  status: UserFramesStatus;
-  /**
-   * Encode the given frames and append them to storage. Dedup is the caller's
-   * responsibility — this hook is storage-only. Returns counts so the caller
-   * can summarise the batch in a toast.
-   */
+  status: OriginalFramesStatus;
   addFrames(frames: Frame[]): { added: number };
-  deleteFrame(id: string): void;
 }
 
 function generateId(): string {
-  return `user-frame-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+  return `original-frame-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }
 
-// On module load: if the stored schema version doesn't match, drop stored
-// frames so useLocalStorage falls back to its initial value. Then write the
-// current version so future loads round-trip cleanly. Mirrors the pattern in
-// useUserPalettes.
 try {
   if (localStorage.getItem(STORAGE_VERSION_KEY) !== STORAGE_VERSION) {
     localStorage.removeItem(STORAGE_KEY);
   }
   localStorage.setItem(STORAGE_VERSION_KEY, STORAGE_VERSION);
 } catch {
-  // localStorage may be unavailable (private mode, etc.) — ignore.
+  // localStorage may be unavailable
 }
 
-/**
- * Persists user-uploaded frames to localStorage and provides a decoded
- * `Frame[]` view for the catalog. The hook is storage-only: callers must
- * dedup against the existing catalog before calling `addFrames`.
- *
- * Decoding individual entries is best-effort — if a stored entry fails to
- * decode (corrupt data URL, etc.) we log a warning and skip it rather than
- * surfacing an error, so a single bad entry can't take down the picker.
- */
-export function useUserFrames(): UseUserFramesResult {
+export function useOriginalFrames(): UseOriginalFramesResult {
   const [entries, setEntries] = useLocalStorage<UserFrameEntry[]>(
     STORAGE_KEY,
     [],
   );
   const [decodedFrames, setDecodedFrames] = useState<Frame[]>([]);
-  const [status, setStatus] = useState<UserFramesStatus>(
+  const [status, setStatus] = useState<OriginalFramesStatus>(
     entries.length === 0 ? "ready" : "loading",
   );
 
-  // Decode entries to Frames whenever the persisted list changes. Each entry
-  // requires an `<img>` round-trip, so this is genuinely async.
   useEffect(() => {
     let cancelled = false;
     if (entries.length === 0) {
@@ -84,7 +63,7 @@ export function useUserFrames(): UseUserFramesResult {
             frames.push(r.value);
           } else {
             console.warn(
-              `useUserFrames: failed to decode entry ${entries[i].id}`,
+              `useOriginalFrames: failed to decode entry ${entries[i].id}`,
               r.reason,
             );
           }
@@ -94,7 +73,7 @@ export function useUserFrames(): UseUserFramesResult {
       })
       .catch((err) => {
         if (cancelled) return;
-        console.error("useUserFrames: decode batch failed", err);
+        console.error("useOriginalFrames: decode batch failed", err);
         setStatus("error");
       });
     return () => {
@@ -124,16 +103,13 @@ export function useUserFrames(): UseUserFramesResult {
           });
         } catch (err) {
           console.error(
-            `useUserFrames: failed to encode frame ${f.sheetStem}`,
+            `useOriginalFrames: failed to encode frame ${f.sheetStem}`,
             err,
           );
         }
       }
       if (newEntries.length === 0) return { added: 0 };
 
-      // Persist with rollback on quota errors. The useLocalStorage helper
-      // swallows write errors silently, so we drive the write directly here
-      // to surface failures and roll back the in-memory state.
       const previous = entries;
       const next = [...previous, ...newEntries];
       try {
@@ -141,12 +117,10 @@ export function useUserFrames(): UseUserFramesResult {
         setEntries(next);
         return { added: newEntries.length };
       } catch (err) {
-        // Restore on-disk state if a partial write occurred and surface the
-        // error to the caller via a thrown exception.
         try {
           localStorage.setItem(STORAGE_KEY, JSON.stringify(previous));
         } catch {
-          // ignore secondary failure
+          // ignore
         }
         throw err;
       }
@@ -154,12 +128,5 @@ export function useUserFrames(): UseUserFramesResult {
     [entries, setEntries],
   );
 
-  const deleteFrame = useCallback(
-    (id: string) => {
-      setEntries((prev) => prev.filter((e) => e.id !== id));
-    },
-    [setEntries],
-  );
-
-  return { entries, decodedFrames, status, addFrames, deleteFrame };
+  return { entries, decodedFrames, status, addFrames };
 }

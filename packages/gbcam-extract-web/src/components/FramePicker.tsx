@@ -79,6 +79,8 @@ interface FramePickerProps {
   userFrameIds?: Set<string>;
   /** Persist a batch of new user-uploaded frames. Called from the upload flow. */
   onAddUserFrames?: (frames: Frame[]) => { added: number };
+  /** Persist new original frames (USA/JPN). */
+  onAddOriginalFrames?: (frames: Frame[]) => { added: number };
   /** Remove a previously-uploaded frame by ID. */
   onDeleteUserFrame?: (id: string) => void;
 }
@@ -236,6 +238,7 @@ export function FramePicker({
   disabled,
   userFrameIds,
   onAddUserFrames,
+  onAddOriginalFrames,
   onDeleteUserFrame,
 }: FramePickerProps) {
   const framesById = useMemo(() => new Map(frames.map((f) => [f.id, f] as const)), [frames]);
@@ -290,8 +293,7 @@ export function FramePicker({
   const customs = useMemo(
     () =>
       sortedFrames.filter(
-        (f) =>
-          userIds.has(f.id) && !regionalStems.has(f.sheetStem),
+        (f) => userIds.has(f.id) && !regionalStems.has(f.sheetStem),
       ),
     [sortedFrames, userIds, regionalStems],
   );
@@ -339,16 +341,21 @@ export function FramePicker({
 
   const processManualImage = useCallback(
     async (image: GBImageData, stem: string) => {
-      if (!onAddUserFrames) return;
+      const isRegional = regionalStems.has(stem);
+      const addMethod = isRegional ? onAddOriginalFrames : onAddUserFrames;
+
+      if (!addMethod) return;
       const detected = detectAndLoadFrames(image, stem);
       const merged = appendDeduped(frames, detected);
       const newlyKept = merged.slice(frames.length);
 
       if (newlyKept.length > 0) {
         try {
-          const { added } = onAddUserFrames(newlyKept);
+          const { added } = addMethod(newlyKept);
           const skipped = detected.length - newlyKept.length;
-          const parts = [`Added ${added} frame${added === 1 ? "" : "s"} from ${stem}.`];
+          const parts = [
+            `Added ${added} frame${added === 1 ? "" : "s"} from ${stem}.`,
+          ];
           if (skipped > 0) {
             parts.push(`Skipped ${skipped} duplicate${skipped === 1 ? "" : "s"}.`);
           }
@@ -364,8 +371,9 @@ export function FramePicker({
         toast.info(`No new frames found in ${stem} (all were duplicates).`);
       }
     },
-    [frames, onAddUserFrames],
+    [frames, onAddUserFrames, onAddOriginalFrames, regionalStems],
   );
+
 
   const handleRegionalPaste = useCallback(
     async (stem: string) => {

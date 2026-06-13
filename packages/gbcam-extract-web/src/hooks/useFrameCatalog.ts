@@ -9,6 +9,7 @@ import {
 } from "gbcam-extract";
 import { FRAME_SHEETS } from "../generated/FrameSheets.js";
 import { useUserFrames } from "./useUserFrames.js";
+import { useOriginalFrames } from "./useOriginalFrames.js";
 
 export type FrameCatalogStatus = "loading" | "ready" | "error";
 
@@ -21,6 +22,8 @@ export interface FrameCatalog {
   userFrameIds: Set<string>;
   /** addFrames from useUserFrames, exposed for the picker's upload flow. */
   addUserFrames: (frames: Frame[]) => { added: number };
+  /** addFrames from useOriginalFrames, exposed for regional sheet uploads. */
+  addOriginalFrames: (frames: Frame[]) => { added: number };
   /** deleteFrame from useUserFrames, exposed for the picker's delete flow. */
   deleteUserFrame: (id: string) => void;
   error?: string;
@@ -82,6 +85,7 @@ async function buildBuiltIns(): Promise<BuiltIn> {
 
 export function useFrameCatalog(): FrameCatalog {
   const userFrames = useUserFrames();
+  const originalFrames = useOriginalFrames();
   const [builtIns, setBuiltIns] = useState<{
     status: FrameCatalogStatus;
     value: BuiltIn;
@@ -119,35 +123,30 @@ export function useFrameCatalog(): FrameCatalog {
     };
   }, []);
 
-  // Merge user frames into the built-ins on every render. appendDeduped
-  // preserves the built-in order and drops any user upload that duplicates an
-  // existing built-in by fingerprint.
+  // Merge original and user frames into the built-ins on every render.
+  // appendDeduped preserves order and drops duplicates.
   const merged = useMemo(() => {
     const baseFrames = builtIns.value.frames;
-    if (userFrames.decodedFrames.length === 0) {
-      return {
-        frames: baseFrames,
-        byId: builtIns.value.byId,
-        userFrameIds: new Set<string>(),
-      };
-    }
+    // Step 1: Merge original sheets (USA/JPN). These are treated like
+    // built-ins (no delete button).
+    const withOriginals = appendDeduped(baseFrames, originalFrames.decodedFrames);
+
+    // Step 2: Merge standard user uploads.
     const userIds = new Set(userFrames.decodedFrames.map((f) => f.id));
-    const frames = appendDeduped(baseFrames, userFrames.decodedFrames);
+    const frames = appendDeduped(withOriginals, userFrames.decodedFrames);
     const byId = new Map(frames.map((f) => [f.id, f] as const));
     return { frames, byId, userFrameIds: userIds };
   }, [
     builtIns.value.frames,
-    builtIns.value.byId,
+    originalFrames.decodedFrames,
     userFrames.decodedFrames,
   ]);
 
-  // Composite status: built-ins must be loaded; user frames decoding while we
-  // already have built-ins shouldn't block the picker (the merged view is
-  // valid without the not-yet-decoded uploads).
+  // Composite status: built-ins and original frames should ideally be ready.
   const status: FrameCatalogStatus =
-    builtIns.status === "error"
+    builtIns.status === "error" || originalFrames.status === "error"
       ? "error"
-      : builtIns.status === "loading"
+      : builtIns.status === "loading" || originalFrames.status === "loading"
         ? "loading"
         : "ready";
 
@@ -158,6 +157,7 @@ export function useFrameCatalog(): FrameCatalog {
     getFrameById: (id) => merged.byId.get(id),
     userFrameIds: merged.userFrameIds,
     addUserFrames: userFrames.addFrames,
+    addOriginalFrames: originalFrames.addFrames,
     deleteUserFrame: userFrames.deleteFrame,
   };
 }
