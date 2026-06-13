@@ -5,14 +5,16 @@
       "label": "Add Original Frames (USA)",
       "url": "https://www.spriters-resource.com/media/assets/124/126906.png",
       "stem": "Frames_USA",
-      "storage": "original"
+      "storage": "original",
+      "creditId": "the-spriters-resource"
     },
     {
       "id": "jpn-sheet",
       "label": "Add Original Frames (JPN)",
       "url": "https://www.spriters-resource.com/media/assets/124/126905.png",
       "stem": "Frames_JPN",
-      "storage": "original"
+      "storage": "original",
+      "creditId": "the-spriters-resource"
     }
   ]
 }

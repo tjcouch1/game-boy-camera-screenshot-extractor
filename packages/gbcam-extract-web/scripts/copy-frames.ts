@@ -129,6 +129,8 @@ export interface ManualSheetEntry {
   stem: string;
   /** Which local storage category to use for these frames. */
   storage: "original" | "custom";
+  /** ID of the license entry for attribution. */
+  creditId?: string;
 }
 
 export const FRAME_SHEETS: ReadonlyArray<FrameSheetEntry> = ${JSON.stringify(entries, null, 2)};

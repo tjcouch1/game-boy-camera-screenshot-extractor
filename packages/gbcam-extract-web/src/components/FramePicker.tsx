@@ -608,10 +608,25 @@ export function FramePicker({
                 </AccordionTrigger>
                 <AccordionContent>
                   <div className="space-y-3 pt-1 pb-2">
-                    <p className="text-xs text-muted-foreground leading-relaxed">
-                      Open the sheet, copy/download the image, and come back
-                      here and click paste/upload.
-                    </p>
+                    <div className="space-y-1">
+                      <p className="text-xs text-muted-foreground leading-relaxed">
+                        Open the sheet, copy/download the image, and come back
+                        here and click paste/upload.
+                      </p>
+                      {region.creditId && (
+                        <p className="text-[10px] text-muted-foreground">
+                          Source:{" "}
+                          <a
+                            href={`./licenses.html#${region.creditId}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-primary hover:underline"
+                          >
+                            Credits & Licensing
+                          </a>
+                        </p>
+                      )}
+                    </div>
                     <div className="flex flex-wrap items-center gap-2">
                       <a
                         href={region.url}

@@ -29,6 +29,10 @@
             "type": "string",
             "enum": ["original", "custom"],
             "description": "Which local storage category to use for these frames."
+          },
+          "creditId": {
+            "type": "string",
+            "description": "ID of the license entry to link to for attribution (optional)."
           }
         },
         "required": ["id", "label", "url", "stem", "storage"]
