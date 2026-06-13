@@ -8,7 +8,7 @@ const NORMAL_H = 144;
 /** Pixel is "hole-like" if its alpha is below this. */
 const TRANSPARENT_ALPHA = 128;
 /** Pixel is "white" if every channel is at least this. */
-const WHITE_THRESHOLD = 250;
+const WHITE_THRESHOLD = 240;
 
 /**
  * Load a single Game Boy Camera frame from an image where the entire image
@@ -17,12 +17,11 @@ const WHITE_THRESHOLD = 250;
  *
  * Algorithm:
  *   1. Build a "hole-like" mask (transparent or white pixel).
- *   2. Find the first 128 × 112 sub-rectangle that is entirely hole-like
- *      (in (y, x) reading order); that's the hole.
- *   3. Snap every non-hole-like pixel to the four GB grayscale values; hole
- *      pixels (and any other transparent/white pixels outside the hole) are
- *      stored as 255 so the frame renders with the lightest palette colour
- *      when shown alone in the picker.
+ *   2. Find the 128 × 112 sub-rectangle that is entirely hole-like and
+ *      closest to the image center.
+ *   3. Snap every pixel to the four GB grayscale values; however, the
+ *      pixels *inside* the detected hole are forced to 255 so the frame
+ *      can be correctly composed later.
  *
  * Type derives from image dimensions: 160 × 144 → "normal", anything else →
  * "wild". Each individual source produces exactly one frame, indexed 1.
@@ -106,11 +105,14 @@ export function loadIndividualFrame(
   }
 
   const pixels = new Uint8ClampedArray(W * H);
+  // Process bezel pixels normally (snap to nearest GB color).
   for (let i = 0; i < W * H; i++) {
-    if (isHoleLike[i]) {
-      pixels[i] = 255;
-    } else {
-      pixels[i] = snapToGB(data[i * 4]);
+    pixels[i] = snapToGB(data[i * 4]);
+  }
+  // Force the hole region to the hole marker (255).
+  for (let dy = 0; dy < HOLE_H; dy++) {
+    for (let dx = 0; dx < HOLE_W; dx++) {
+      pixels[(bestY + dy) * W + (bestX + dx)] = 255;
     }
   }
 

@@ -88,19 +88,23 @@ export function detectAndLoadFrames(
     sheetFrames = [];
   }
   if (sheetFrames.length >= 2) {
+    console.log(`[detect] ${stem}: splitSheet found ${sheetFrames.length} frames.`);
     return sheetFrames;
   }
 
   try {
     const f = loadIndividualFrame(image, stem);
+    console.log(`[detect] ${stem}: loadIndividualFrame found hole at (${f.holeX}, ${f.holeY}) in ${f.width}x${f.height} image.`);
     return [f];
-  } catch {
+  } catch (err) {
     // Defensive fallback: a single-frame sheet whose body has a non-white,
     // non-transparent background can defeat loadIndividualFrame's hole search
     // even though splitSheet was happy. Use what we have rather than throw.
     if (sheetFrames.length === 1) {
+      console.warn(`[detect] ${stem}: loadIndividualFrame failed (${err instanceof Error ? err.message : String(err)}), falling back to splitSheet single result (${sheetFrames[0].width}x${sheetFrames[0].height}).`);
       return sheetFrames;
     }
+    console.error(`[detect] ${stem}: detection failed completely.`, err);
     throw new Error("Couldn't detect a frame in this image.");
   }
 }
