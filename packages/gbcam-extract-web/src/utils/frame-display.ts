@@ -26,18 +26,39 @@ function prettifyStem(stem: string): string {
  * filenames.
  *
  * Examples:
- *   - `Frame 3 (USA)` — sheet normal frame from a single sheet
- *   - `Frame 3` — sheet frame deduplicated across sheets (region dropped
- *     because the same image appeared in multiple sheets)
- *   - `Wild Frame 1 (JPN)` — sheet wild frame from a single sheet
+ *   - `Frame 3` — unique index or shared across regional sheets
+ *   - `Frame 3 (USA)` — colliding index (e.g. USA and JPN both have a Frame 3
+ *     and they are visually different)
  *   - `Standard matrix` — individual frame; just the cleaned file stem
- *   - `Wild megaman BOICHOT` — individual frame (wild category)
  */
-export function frameDisplayName(frame: Frame): string {
+export function frameDisplayName(frame: Frame, allFrames?: Frame[]): string {
   if (frame.kind === "individual") return prettifyStem(frame.sheetStem);
   const prefix = frame.type === "wild" ? "Wild Frame" : "Frame";
-  const sharedAcrossSheets = frame.aliasStems.length > 1;
-  if (sharedAcrossSheets) return `${prefix} ${frame.index}`;
+
+  const isRegional =
+    frame.sheetStem === "Frames_USA" || frame.sheetStem === "Frames_JPN";
+
+  // If it's shared across sheets (USA + JPN are identical), no region needed.
+  if (frame.aliasStems.length > 1) return `${prefix} ${frame.index}`;
+
+  // If it's not a regional frame, always show the stem/region.
+  if (!isRegional)
+    return `${prefix} ${frame.index} (${regionFromStem(frame.sheetStem)})`;
+
+  // If we don't have the context of other frames, assume collision and show region.
+  if (!allFrames)
+    return `${prefix} ${frame.index} (${regionFromStem(frame.sheetStem)})`;
+
+  // Only show region if another regional frame exists with the same index.
+  const hasCollision = allFrames.some(
+    (f) =>
+      f.id !== frame.id &&
+      f.type === frame.type &&
+      f.index === frame.index &&
+      (f.sheetStem === "Frames_USA" || f.sheetStem === "Frames_JPN"),
+  );
+
+  if (!hasCollision) return `${prefix} ${frame.index}`;
   return `${prefix} ${frame.index} (${regionFromStem(frame.sheetStem)})`;
 }
 

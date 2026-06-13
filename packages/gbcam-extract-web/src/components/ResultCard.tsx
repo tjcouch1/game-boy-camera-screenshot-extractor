@@ -138,9 +138,11 @@ export function ResultCard({
     if (!outputCanvas) return;
     const basename = filename.replace(/\.[^.]+$/, "");
     const paletteSlug = sanitizePaletteName(paletteName);
-    const frameSlug = effectiveFrame
-      ? sanitizeFrameName(frameDisplayName(effectiveFrame))
+    const effectiveFrameName = effectiveFrame
+      ? frameDisplayName(effectiveFrame, frames)
       : "";
+    const frameSlug = effectiveFrame ? sanitizeFrameName(effectiveFrameName) : "";
+
     const link = document.createElement("a");
     link.download = [basename, paletteSlug, frameSlug, "gb"]
       .filter(Boolean)

@@ -218,12 +218,14 @@ function FrameCornerCanvas({
 function selectionLabel(
   value: FrameSelection,
   framesById: Map<string, Frame>,
+  frames: Frame[],
   defaultLabel: string | undefined,
 ): string {
-  if (value.kind === "default") return `Default${defaultLabel ? ` — ${defaultLabel}` : ""}`;
+  if (value.kind === "default")
+    return `Default${defaultLabel ? ` — ${defaultLabel}` : ""}`;
   if (value.kind === "none") return "No frame";
   const f = framesById.get(value.id);
-  return f ? frameDisplayName(f) : value.id;
+  return f ? frameDisplayName(f, frames) : value.id;
 }
 
 export function FramePicker({
@@ -248,7 +250,12 @@ export function FramePicker({
       : value.kind === "default"
         ? defaultFrame ?? null
         : null;
-  const triggerLabel = selectionLabel(value, framesById, defaultFrameLabel);
+  const triggerLabel = selectionLabel(
+    value,
+    framesById,
+    frames,
+    defaultFrameLabel,
+  );
   const thumbnailImage = image ?? EMPTY_IMAGE;
 
   // Custom-frames support is enabled when the parent passes both the upload
@@ -567,7 +574,7 @@ export function FramePicker({
             {normals.map((f) => (
               <FrameTile
                 key={f.id}
-                label={frameDisplayName(f)}
+                label={frameDisplayName(f, frames)}
                 selected={value.kind === "frame" && value.id === f.id}
                 onClick={() => select({ kind: "frame", id: f.id })}
                 palette={palette}
@@ -587,7 +594,7 @@ export function FramePicker({
             {wilds.map((f) => (
               <FrameTile
                 key={f.id}
-                label={frameDisplayName(f)}
+                label={frameDisplayName(f, frames)}
                 selected={value.kind === "frame" && value.id === f.id}
                 onClick={() => select({ kind: "frame", id: f.id })}
                 palette={palette}
@@ -700,7 +707,7 @@ export function FramePicker({
               {customs.map((f) => (
                 <FrameTile
                   key={f.id}
-                  label={frameDisplayName(f)}
+                  label={frameDisplayName(f, frames)}
                   selected={value.kind === "frame" && value.id === f.id}
                   onClick={() => select({ kind: "frame", id: f.id })}
                   palette={palette}
@@ -747,7 +754,7 @@ export function FramePicker({
           <DialogTitle>Delete this frame?</DialogTitle>
           <DialogDescription>
             {pendingDeleteFrame
-              ? `"${frameDisplayName(pendingDeleteFrame)}" will be removed. This can't be undone.`
+              ? `"${frameDisplayName(pendingDeleteFrame, frames)}" will be removed. This can't be undone.`
               : "This can't be undone."}
           </DialogDescription>
         </DialogHeader>
