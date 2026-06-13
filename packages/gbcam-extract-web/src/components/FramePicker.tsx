@@ -255,17 +255,45 @@ export function FramePicker({
   const customEnabled = Boolean(onAddUserFrames && onDeleteUserFrame);
   const userIds = userFrameIds ?? EMPTY_USER_IDS;
 
+  const regionalStems = useMemo(() => new Set(["Frames_USA", "Frames_JPN"]), []);
+
+  // Sort frames so USA frames come first, then JPN frames, then others.
+  const sortedFrames = useMemo(() => {
+    return [...frames].sort((a, b) => {
+      if (a.sheetStem === b.sheetStem) return 0;
+      if (a.sheetStem === "Frames_USA") return -1;
+      if (b.sheetStem === "Frames_USA") return 1;
+      if (a.sheetStem === "Frames_JPN") return -1;
+      if (b.sheetStem === "Frames_JPN") return 1;
+      return 0;
+    });
+  }, [frames]);
+
   const normals = useMemo(
-    () => frames.filter((f) => f.type === "normal" && !userIds.has(f.id)),
-    [frames, userIds],
+    () =>
+      sortedFrames.filter(
+        (f) =>
+          f.type === "normal" &&
+          (!userIds.has(f.id) || regionalStems.has(f.sheetStem)),
+      ),
+    [sortedFrames, userIds, regionalStems],
   );
   const wilds = useMemo(
-    () => frames.filter((f) => f.type === "wild" && !userIds.has(f.id)),
-    [frames, userIds],
+    () =>
+      sortedFrames.filter(
+        (f) =>
+          f.type === "wild" &&
+          (!userIds.has(f.id) || regionalStems.has(f.sheetStem)),
+      ),
+    [sortedFrames, userIds, regionalStems],
   );
   const customs = useMemo(
-    () => frames.filter((f) => userIds.has(f.id)),
-    [frames, userIds],
+    () =>
+      sortedFrames.filter(
+        (f) =>
+          userIds.has(f.id) && !regionalStems.has(f.sheetStem),
+      ),
+    [sortedFrames, userIds, regionalStems],
   );
 
   const [open, setOpen] = useState(false);
@@ -280,6 +308,34 @@ export function FramePicker({
     "gbcam-frame-picker-accordions",
     [],
   );
+
+  const [openedStems, setOpenedStems] = useState<Set<string>>(new Set());
+
+  const hasUsa = useMemo(
+    () => frames.some((f) => f.sheetStem === "Frames_USA"),
+    [frames],
+  );
+  const hasJpn = useMemo(
+    () => frames.some((f) => f.sheetStem === "Frames_JPN"),
+    [frames],
+  );
+
+  const regionalSheets = [
+    {
+      id: "usa",
+      label: "Add Original Frames (USA)",
+      url: "https://www.spriters-resource.com/media/assets/124/126906.png",
+      stem: "Frames_USA",
+      hidden: hasUsa,
+    },
+    {
+      id: "jpn",
+      label: "Add Original Frames (JPN)",
+      url: "https://www.spriters-resource.com/media/assets/124/126905.png",
+      stem: "Frames_JPN",
+      hidden: hasJpn,
+    },
+  ].filter((s) => !s.hidden);
 
   const processManualImage = useCallback(
     async (image: GBImageData, stem: string) => {
@@ -536,27 +592,14 @@ export function FramePicker({
           </div>
         </>
       )}
-      {customEnabled && (
+      {customEnabled && regionalSheets.length > 0 && (
         <div className="mt-4">
           <Accordion
             multiple
             value={activeAccordions}
             onValueChange={setActiveAccordions}
           >
-            {[
-              {
-                id: "usa",
-                label: "Add Original Frames (USA)",
-                url: "https://www.spriters-resource.com/game_boy_gbc/gameboycamera/asset/126906/",
-                stem: "Frames_USA",
-              },
-              {
-                id: "jpn",
-                label: "Add Original Frames (JPN)",
-                url: "https://www.spriters-resource.com/game_boy_gbc/gameboycamera/asset/126905/",
-                stem: "Frames_JPN",
-              },
-            ].map((region) => (
+            {regionalSheets.map((region) => (
               <AccordionItem key={region.id} value={region.id}>
                 <AccordionTrigger className="py-2 text-sm">
                   {region.label}
@@ -567,36 +610,56 @@ export function FramePicker({
                       Open the sheet, copy/download the image, and come back
                       here and click paste/upload.
                     </p>
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <a
                         href={region.url}
                         target="_blank"
                         rel="noopener noreferrer"
                         className={cn(
-                          buttonVariants({ variant: "secondary", size: "sm" }),
+                          buttonVariants({
+                            variant: openedStems.has(region.stem)
+                              ? "secondary"
+                              : "default",
+                            size: "sm",
+                          }),
                           "flex-1 min-w-[100px]",
                         )}
+                        onClick={() =>
+                          setOpenedStems(
+                            (prev) => new Set([...prev, region.stem]),
+                          )
+                        }
                       >
                         <ExternalLink data-icon="inline-start" />
-                        1. Open Sheet
+                        Open Sheet
                       </a>
+                      <span className="text-[10px] font-medium text-muted-foreground uppercase">
+                        then
+                      </span>
                       <Button
-                        variant="secondary"
+                        variant={
+                          openedStems.has(region.stem) ? "default" : "secondary"
+                        }
                         size="sm"
                         className="flex-1 min-w-[100px]"
                         onClick={() => handleRegionalPaste(region.stem)}
                       >
                         <ClipboardPaste data-icon="inline-start" />
-                        2. Paste
+                        Paste
                       </Button>
+                      <span className="text-[10px] font-medium text-muted-foreground uppercase">
+                        or
+                      </span>
                       <Button
-                        variant="secondary"
+                        variant={
+                          openedStems.has(region.stem) ? "default" : "secondary"
+                        }
                         size="sm"
                         className="flex-1 min-w-[100px]"
                         onClick={() => handleRegionalUploadClick(region.stem)}
                       >
                         <Upload data-icon="inline-start" />
-                        2. Upload
+                        Upload
                       </Button>
                     </div>
                   </div>
