@@ -86,16 +86,12 @@ describe("dedupeFrames", () => {
     expect(indDup.aliasStems).toEqual(["ind-dup"]);
   });
 
-  const hasRealSheets =
-    fs.existsSync(repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_USA.png")) &&
-    fs.existsSync(repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_JPN.png"));
-
-  it.runIf(hasRealSheets)("deduplicates real sheets and yields fewer frames than the sum", async () => {
+  it("deduplicates real sheets and yields fewer frames than the sum", async () => {
     const usaSheet = await loadImage(
-      repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_USA.png"),
+      repoRoot("supporting-materials/frames/test-sheets/Test_USA.png"),
     );
     const jpnSheet = await loadImage(
-      repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_JPN.png"),
+      repoRoot("supporting-materials/frames/test-sheets/Test_JPN.png"),
     );
     const usa = splitSheet(usaSheet, "Frames_USA");
     const jpn = splitSheet(jpnSheet, "Frames_JPN");

@@ -98,13 +98,9 @@ describe("composeFrame", () => {
     expect(out.data[hi + 2]).toBe(0xa5);
   });
 
-  const hasRealSheets = fs.existsSync(
-    repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_USA.png"),
-  );
-
-  it.runIf(hasRealSheets)("works on a real frame", async () => {
+  it("works on a real frame", async () => {
     const sheet = await loadImage(
-      repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_USA.png"),
+      repoRoot("supporting-materials/frames/test-sheets/Test_USA.png"),
     );
     const frames = splitSheet(sheet, "Frames_USA");
     const frame = frames[0];

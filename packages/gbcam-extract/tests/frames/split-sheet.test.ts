@@ -93,14 +93,10 @@ describe("splitSheet — synthetic", () => {
   });
 });
 
-const hasRealSheets =
-  fs.existsSync(repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_USA.png")) &&
-  fs.existsSync(repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_JPN.png"));
-
-describe.runIf(hasRealSheets)("splitSheet — real sheets", () => {
+describe("splitSheet — real sheets", () => {
   it("splits Frames_USA.png into a stable set of frames", async () => {
     const sheet = await loadImage(
-      repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_USA.png"),
+      repoRoot("supporting-materials/frames/test-sheets/Test_USA.png"),
     );
     const frames = splitSheet(sheet, "Frames_USA");
 
@@ -184,7 +180,7 @@ describe.runIf(hasRealSheets)("splitSheet — real sheets", () => {
 
   it("splits Frames_JPN.png into a stable set of frames", async () => {
     const sheet = await loadImage(
-      repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_JPN.png"),
+      repoRoot("supporting-materials/frames/test-sheets/Test_JPN.png"),
     );
     const frames = splitSheet(sheet, "Frames_JPN");
     expect(frames.length).toBeGreaterThan(0);
