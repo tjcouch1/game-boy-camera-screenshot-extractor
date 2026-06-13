@@ -91,6 +91,33 @@ describe("loadIndividualFrame", () => {
     expect(() => loadIndividualFrame(image, "no-hole")).toThrow(/no .*hole/);
   });
 
+  it("fails to find the correct hole when white pixels exist elsewhere (repro for blank box issue)", () => {
+    // 160x144 image.
+    // Intended hole at (16, 16).
+    // Accidental "hole-like" 128x112 area at (0, 0) because of white pixels in the top-left bezel.
+    const W = 160;
+    const H = 144;
+
+    // Create image with hole at (0, 0)
+    const brokenImage = buildIndividual(W, H, 0, 0, 0, "white");
+    // Now add the REAL hole at (16, 16).
+    for (let y = 16; y < 16 + 112; y++) {
+      for (let x = 16; x < 16 + 128; x++) {
+        const i = (y * W + x) * 4;
+        brokenImage.data[i] = 255;
+        brokenImage.data[i + 1] = 255;
+        brokenImage.data[i + 2] = 255;
+        brokenImage.data[i + 3] = 255;
+      }
+    }
+
+    const f = loadIndividualFrame(brokenImage, "Repro");
+    // Current algorithm will find (0, 0) because it's first in reading order.
+    // If we want it to be robust, it should ideally find the more "centered" hole.
+    expect(f.holeX).toBe(16);
+    expect(f.holeY).toBe(16);
+  });
+
   it("throws when the image is smaller than the hole", () => {
     const data = new Uint8ClampedArray(64 * 56 * 4);
     const image: GBImageData = { data, width: 64, height: 56 };

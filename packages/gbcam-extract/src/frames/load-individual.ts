@@ -55,15 +55,19 @@ export function loadIndividualFrame(
     }
   }
 
-  // Row-prefix-sum trick over isHoleLike to find an all-1 128 × 112 rectangle.
-  // For each (y0, x0), the number of hole-like pixels in the 128 × 112 region
-  // equals HOLE_W * HOLE_H iff every pixel is hole-like.
-  // Use a per-row sliding window summed across rows.
-  let foundX = -1;
-  let foundY = -1;
-  // colSum[x] = number of hole-like pixels in the vertical strip [y0, y0 + HOLE_H)
-  // at column x. Recomputed once per y0.
-  outer: for (let y0 = 0; y0 + HOLE_H <= H; y0++) {
+  // Find the 128 × 112 sub-rectangle that is entirely hole-like and closest to
+  // the image center. Picking the first match in (y, x) order is brittle
+  // because many frame sheets have white or transparent regions in the bezel
+  // (e.g. logo areas) that can form accidental 128 × 112 holes if they are
+  // positioned just right.
+  let bestX = -1;
+  let bestY = -1;
+  let minDistanceSq = Number.MAX_VALUE;
+
+  const centerX = (W - HOLE_W) / 2;
+  const centerY = (H - HOLE_H) / 2;
+
+  for (let y0 = 0; y0 + HOLE_H <= H; y0++) {
     const colSum = new Int32Array(W);
     for (let x = 0; x < W; x++) {
       let s = 0;
@@ -72,26 +76,30 @@ export function loadIndividualFrame(
       }
       colSum[x] = s;
     }
-    // Sliding window of width HOLE_W across columns.
+
     let windowSum = 0;
     for (let x = 0; x < HOLE_W; x++) windowSum += colSum[x];
+
     const target = HOLE_W * HOLE_H;
-    if (windowSum === target) {
-      foundX = 0;
-      foundY = y0;
-      break outer;
-    }
-    for (let x0 = 1; x0 + HOLE_W <= W; x0++) {
-      windowSum += colSum[x0 + HOLE_W - 1] - colSum[x0 - 1];
+    for (let x0 = 0; x0 + HOLE_W <= W; x0++) {
+      if (x0 > 0) {
+        windowSum += colSum[x0 + HOLE_W - 1] - colSum[x0 - 1];
+      }
+
       if (windowSum === target) {
-        foundX = x0;
-        foundY = y0;
-        break outer;
+        const dx = x0 - centerX;
+        const dy = y0 - centerY;
+        const distSq = dx * dx + dy * dy;
+        if (distSq < minDistanceSq) {
+          minDistanceSq = distSq;
+          bestX = x0;
+          bestY = y0;
+        }
       }
     }
   }
 
-  if (foundX < 0) {
+  if (bestX < 0) {
     throw new Error(
       `loadIndividualFrame: no ${HOLE_W}x${HOLE_H} transparent or white hole found in ${frameStem}`,
     );
@@ -119,8 +127,8 @@ export function loadIndividualFrame(
     width: W,
     height: H,
     pixels,
-    holeX: foundX,
-    holeY: foundY,
+    holeX: bestX,
+    holeY: bestY,
   };
 }
 

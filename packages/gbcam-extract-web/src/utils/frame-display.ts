@@ -48,7 +48,8 @@ export function frameDisplayName(frame: Frame, allFrames?: Frame[]): string {
   // If we don't have the context of other frames, assume no collision.
   if (!allFrames || allFrames.length === 0) return `${prefix} ${frame.index}`;
 
-  // Only show region if another regional frame exists with the same index.
+  // Only show region if another regional frame exists with the same index,
+  // OR if it's a JPN frame (per user requirement to always show JPN tag).
   const hasCollision = allFrames.some(
     (f) =>
       f.id !== frame.id &&
@@ -57,7 +58,9 @@ export function frameDisplayName(frame: Frame, allFrames?: Frame[]): string {
       (f.sheetStem === "Frames_USA" || f.sheetStem === "Frames_JPN"),
   );
 
-  if (!hasCollision) return `${prefix} ${frame.index}`;
+  if (!hasCollision && frame.sheetStem !== "Frames_JPN")
+    return `${prefix} ${frame.index}`;
+
   return `${prefix} ${frame.index} (${regionFromStem(frame.sheetStem)})`;
 }
 
