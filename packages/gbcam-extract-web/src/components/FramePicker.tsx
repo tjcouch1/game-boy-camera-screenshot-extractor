@@ -609,7 +609,7 @@ export function FramePicker({
                 <AccordionContent>
                   <div className="space-y-3 pt-1 pb-2">
                     <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs text-muted-foreground leading-relaxed">
-                      <p>
+                      <p className="flex-1">
                         Open the sheet, copy/download the image, and come back
                         here and click paste/upload.
                       </p>
@@ -620,7 +620,7 @@ export function FramePicker({
                           rel="noopener noreferrer"
                           className="text-[10px] text-primary hover:underline whitespace-nowrap"
                         >
-                          (Credits)
+                          Credits
                         </a>
                       )}
                     </div>
@@ -784,7 +784,13 @@ export function FramePicker({
   if (isMobile) {
     return (
       <>
-        <Drawer open={open} onOpenChange={setOpen}>
+        <Drawer
+          open={open}
+          onOpenChange={(nextOpen) => {
+            if (!nextOpen && pendingDeleteId !== null) return;
+            setOpen(nextOpen);
+          }}
+        >
           <DrawerTrigger asChild>{triggerButton}</DrawerTrigger>
           <DrawerContent>
             <DrawerHeader>
@@ -800,7 +806,13 @@ export function FramePicker({
 
   return (
     <>
-      <Popover open={open} onOpenChange={setOpen}>
+      <Popover
+        open={open}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen && pendingDeleteId !== null) return;
+          setOpen(nextOpen);
+        }}
+      >
         <PopoverTrigger render={triggerButton} />
         <PopoverContent className="w-[min(90vw,640px)] max-h-[70vh] overflow-auto p-3">
           {body}
