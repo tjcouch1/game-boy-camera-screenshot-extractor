@@ -22,16 +22,25 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/shadcn/components/dialog";
-import { Button } from "@/shadcn/components/button";
+import { Button, buttonVariants } from "@/shadcn/components/button";
 import {
   ChevronDown,
   Frame as FrameIcon,
   Trash2,
   Upload,
+  ExternalLink,
+  ClipboardPaste,
 } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/shadcn/utils/utils";
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from "@/shadcn/components/accordion";
 import { useIsMobile } from "../hooks/useIsMobile.js";
+import { useLocalStorage } from "../hooks/useLocalStorage.js";
 import type { FrameSelection } from "../types/frame-selection.js";
 import { frameDisplayName } from "../utils/frame-display.js";
 import {
@@ -267,6 +276,93 @@ export function FramePicker({
     ? framesById.get(pendingDeleteId) ?? null
     : null;
 
+  const [activeAccordions, setActiveAccordions] = useLocalStorage<string[]>(
+    "gbcam-frame-picker-accordions",
+    [],
+  );
+
+  const processManualImage = useCallback(
+    async (image: GBImageData, stem: string) => {
+      if (!onAddUserFrames) return;
+      const detected = detectAndLoadFrames(image, stem);
+      const merged = appendDeduped(frames, detected);
+      const newlyKept = merged.slice(frames.length);
+
+      if (newlyKept.length > 0) {
+        try {
+          const { added } = onAddUserFrames(newlyKept);
+          const skipped = detected.length - newlyKept.length;
+          const parts = [`Added ${added} frame${added === 1 ? "" : "s"} from ${stem}.`];
+          if (skipped > 0) {
+            parts.push(`Skipped ${skipped} duplicate${skipped === 1 ? "" : "s"}.`);
+          }
+          toast.success(parts.join(" "));
+        } catch (err) {
+          if (err instanceof DOMException && err.name === "QuotaExceededError") {
+            toast.error("Out of storage. Delete some frames and try again.");
+          } else {
+            toast.error(`Failed to save frames for ${stem}.`);
+          }
+        }
+      } else {
+        toast.info(`No new frames found in ${stem} (all were duplicates).`);
+      }
+    },
+    [frames, onAddUserFrames],
+  );
+
+  const handleRegionalPaste = useCallback(
+    async (stem: string) => {
+      try {
+        const items = await navigator.clipboard.read();
+        for (const item of items) {
+          for (const type of item.types) {
+            if (type.startsWith("image/")) {
+              const blob = await item.getType(type);
+              const image = await fileToGBImageData(blob as File);
+              await processManualImage(image, stem);
+              return;
+            }
+          }
+        }
+        toast.error("No image found on clipboard. Please copy the sheet first.");
+      } catch (err) {
+        console.error("Clipboard paste failed", err);
+        toast.error(
+          "Failed to read clipboard. Please ensure you've granted permission and are using a modern browser.",
+        );
+      }
+    },
+    [processManualImage],
+  );
+
+  const regionalFilesRef = useRef<HTMLInputElement>(null);
+  const [activeRegionalStem, setActiveRegionalStem] = useState<string | null>(
+    null,
+  );
+
+  const handleRegionalUploadClick = useCallback((stem: string) => {
+    setActiveRegionalStem(stem);
+    regionalFilesRef.current?.click();
+  }, []);
+
+  const handleRegionalFiles = useCallback(
+    async (fileList: FileList | null) => {
+      if (!fileList || fileList.length === 0 || !activeRegionalStem) return;
+      const file = fileList[0];
+      if (regionalFilesRef.current) regionalFilesRef.current.value = "";
+      try {
+        const image = await fileToGBImageData(file);
+        await processManualImage(image, activeRegionalStem);
+      } catch (err) {
+        toast.error(`${file.name}: ${err instanceof Error ? err.message : "Unknown error"}`);
+      } finally {
+        setActiveRegionalStem(null);
+      }
+    },
+    [activeRegionalStem, processManualImage],
+  );
+
   const select = useCallback(
     (next: FrameSelection) => {
       onChange(next);
@@ -441,6 +537,76 @@ export function FramePicker({
         </>
       )}
       {customEnabled && (
+        <div className="mt-4">
+          <Accordion
+            multiple
+            value={activeAccordions}
+            onValueChange={setActiveAccordions}
+          >
+            {[
+              {
+                id: "usa",
+                label: "Add Original Frames (USA)",
+                url: "https://www.spriters-resource.com/game_boy_gbc/gameboycamera/asset/126906/",
+                stem: "Frames_USA",
+              },
+              {
+                id: "jpn",
+                label: "Add Original Frames (JPN)",
+                url: "https://www.spriters-resource.com/game_boy_gbc/gameboycamera/asset/126905/",
+                stem: "Frames_JPN",
+              },
+            ].map((region) => (
+              <AccordionItem key={region.id} value={region.id}>
+                <AccordionTrigger className="py-2 text-sm">
+                  {region.label}
+                </AccordionTrigger>
+                <AccordionContent>
+                  <div className="space-y-3 pt-1 pb-2">
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                      Open the sheet, copy/download the image, and come back
+                      here and click paste/upload.
+                    </p>
+                    <div className="flex flex-wrap gap-2">
+                      <a
+                        href={region.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className={cn(
+                          buttonVariants({ variant: "secondary", size: "sm" }),
+                          "flex-1 min-w-[100px]",
+                        )}
+                      >
+                        <ExternalLink data-icon="inline-start" />
+                        1. Open Sheet
+                      </a>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="flex-1 min-w-[100px]"
+                        onClick={() => handleRegionalPaste(region.stem)}
+                      >
+                        <ClipboardPaste data-icon="inline-start" />
+                        2. Paste
+                      </Button>
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="flex-1 min-w-[100px]"
+                        onClick={() => handleRegionalUploadClick(region.stem)}
+                      >
+                        <Upload data-icon="inline-start" />
+                        2. Upload
+                      </Button>
+                    </div>
+                  </div>
+                </AccordionContent>
+              </AccordionItem>
+            ))}
+          </Accordion>
+        </div>
+      )}
+      {customEnabled && (
         <>
           <div className="mt-3 mb-2 flex items-center justify-between gap-2">
             <h4 className="text-sm font-semibold">Custom frames</h4>
@@ -483,6 +649,13 @@ export function FramePicker({
             multiple
             className="hidden"
             onChange={(e) => handleFiles(e.target.files)}
+          />
+          <input
+            ref={regionalFilesRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            className="hidden"
+            onChange={(e) => handleRegionalFiles(e.target.files)}
           />
         </>
       )}
