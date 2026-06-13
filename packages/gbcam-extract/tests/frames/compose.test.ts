@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
+import * as fs from "node:fs";
 import { composeFrame } from "../../src/frames/compose.js";
 import { splitSheet } from "../../src/frames/split-sheet.js";
 import type { Frame } from "../../src/frames/types.js";
-import { applyPalette } from "../../src/palette.js";
 import type { GBImageData } from "../../src/common.js";
 import { loadImage, repoRoot } from "../helpers/load-image.js";
 
@@ -98,7 +98,11 @@ describe("composeFrame", () => {
     expect(out.data[hi + 2]).toBe(0xa5);
   });
 
-  it("works on a real frame", async () => {
+  const hasRealSheets = fs.existsSync(
+    repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_USA.png"),
+  );
+
+  it.runIf(hasRealSheets)("works on a real frame", async () => {
     const sheet = await loadImage(
       repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_USA.png"),
     );

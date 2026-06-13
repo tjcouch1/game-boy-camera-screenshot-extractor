@@ -35,13 +35,36 @@ let cachedBuiltIns: BuiltIn | null = null;
 let pendingBuiltIns: Promise<BuiltIn> | null = null;
 
 async function fetchSheet(url: string): Promise<GBImageData> {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
-  const blob = await res.blob();
+  const cacheName = "gbcam-frames-cache-v1";
+  let blob: Blob | undefined;
+
+  if ("caches" in window) {
+    try {
+      const cache = await caches.open(cacheName);
+      let res = await cache.match(url);
+      if (!res) {
+        res = await fetch(url);
+        if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+        // Cache the response. Note: we clone it because .blob() consumes the body.
+        await cache.put(url, res.clone());
+      }
+      blob = await res.blob();
+    } catch (e) {
+      console.warn(`Cache API failed for ${url}, falling back to fetch`, e);
+    }
+  }
+
+  if (!blob) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Failed to fetch ${url}: ${res.status}`);
+    blob = await res.blob();
+  }
+
   const objectUrl = URL.createObjectURL(blob);
   try {
     const img = await new Promise<HTMLImageElement>((resolve, reject) => {
       const el = new Image();
+      el.crossOrigin = "anonymous"; // Needed for remote URLs
       el.onload = () => resolve(el);
       el.onerror = () => reject(new Error(`Failed to decode ${url}`));
       el.src = objectUrl;

@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import * as fs from "node:fs";
 import { splitSheet } from "../../src/frames/split-sheet.js";
 import { dedupeFrames, appendDeduped } from "../../src/frames/dedupe.js";
 import type { Frame } from "../../src/frames/types.js";
@@ -85,7 +86,11 @@ describe("dedupeFrames", () => {
     expect(indDup.aliasStems).toEqual(["ind-dup"]);
   });
 
-  it("deduplicates real sheets and yields fewer frames than the sum", async () => {
+  const hasRealSheets =
+    fs.existsSync(repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_USA.png")) &&
+    fs.existsSync(repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_JPN.png"));
+
+  it.runIf(hasRealSheets)("deduplicates real sheets and yields fewer frames than the sum", async () => {
     const usaSheet = await loadImage(
       repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_USA.png"),
     );

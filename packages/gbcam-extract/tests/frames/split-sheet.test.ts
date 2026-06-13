@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+import * as fs from "node:fs";
 import { splitSheet } from "../../src/frames/split-sheet.js";
 import type { GBImageData } from "../../src/common.js";
 import { loadImage, repoRoot } from "../helpers/load-image.js";
@@ -92,7 +93,11 @@ describe("splitSheet — synthetic", () => {
   });
 });
 
-describe("splitSheet — real sheets", () => {
+const hasRealSheets =
+  fs.existsSync(repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_USA.png")) &&
+  fs.existsSync(repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_JPN.png"));
+
+describe.runIf(hasRealSheets)("splitSheet — real sheets", () => {
   it("splits Frames_USA.png into a stable set of frames", async () => {
     const sheet = await loadImage(
       repoRoot("supporting-materials/frames/sheets/the-spriters-resource/Frames_USA.png"),
