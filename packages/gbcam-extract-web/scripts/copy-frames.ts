@@ -16,10 +16,18 @@ const IMAGE_EXTS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp"]);
 
 type FrameKind = "sheet" | "individual";
 
-interface SheetEntry {
+export interface FrameSheetEntry {
   url: string;
   stem: string;
   kind: FrameKind;
+}
+
+export interface ManualSheetEntry {
+  id: string;
+  label: string;
+  url: string;
+  stem: string;
+  storage: "original" | "custom";
 }
 
 function walk(dir: string, out: string[] = []): string[] {
@@ -33,8 +41,8 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-function collect(root: string, kind: FrameKind): SheetEntry[] {
-  const entries: SheetEntry[] = [];
+function collect(root: string, kind: FrameKind): FrameSheetEntry[] {
+  const entries: FrameSheetEntry[] = [];
   if (!fs.existsSync(root)) return entries;
   for (const src of walk(root)) {
     const ext = path.extname(src).toLowerCase();
@@ -53,13 +61,30 @@ function collect(root: string, kind: FrameKind): SheetEntry[] {
   return entries;
 }
 
+function collectManual(root: string): ManualSheetEntry[] {
+  const entries: ManualSheetEntry[] = [];
+  if (!fs.existsSync(root)) return entries;
+  for (const src of walk(root)) {
+    if (path.basename(src) !== "acquisition.json") continue;
+    try {
+      const content = JSON.parse(fs.readFileSync(src, "utf-8"));
+      if (Array.isArray(content.entries)) {
+        entries.push(...content.entries);
+      }
+    } catch (err) {
+      console.error(`[copy-frames] Failed to parse ${src}:`, err);
+    }
+  }
+  return entries;
+}
+
 function main() {
   if (!fs.existsSync(sourceRoot)) {
     console.warn(`[copy-frames] No frames at ${sourceRoot}; skipping.`);
     fs.mkdirSync(path.dirname(destManifest), { recursive: true });
     fs.writeFileSync(
       destManifest,
-      `// auto-generated — do not edit\nexport interface FrameSheetEntry { url: string; stem: string; kind: "sheet" | "individual"; }\nexport const FRAME_SHEETS: ReadonlyArray<FrameSheetEntry> = [];\n`,
+      `// auto-generated — do not edit\nexport interface FrameSheetEntry { url: string; stem: string; kind: "sheet" | "individual"; }\nexport const FRAME_SHEETS: ReadonlyArray<FrameSheetEntry> = [];\nexport const MANUAL_SHEETS: ReadonlyArray<any> = [];\n`,
       "utf-8",
     );
     return;
@@ -72,6 +97,7 @@ function main() {
 
   const sheetEntries = collect(sheetsRoot, "sheet");
   const individualEntries = collect(individualRoot, "individual");
+  const manualEntries = collectManual(sourceRoot);
 
   // Sheets first, then individuals — the catalog relies on this order so
   // sheet frames appear before individual frames in the picker.
@@ -92,10 +118,25 @@ export interface FrameSheetEntry {
   kind: "sheet" | "individual";
 }
 
+export interface ManualSheetEntry {
+  /** Unique ID for the acquisition section. */
+  id: string;
+  /** Display label for the accordion trigger. */
+  label: string;
+  /** Direct URL to the image asset. */
+  url: string;
+  /** Sanitized stem to use for the frame sheet. */
+  stem: string;
+  /** Which local storage category to use for these frames. */
+  storage: "original" | "custom";
+}
+
 export const FRAME_SHEETS: ReadonlyArray<FrameSheetEntry> = ${JSON.stringify(entries, null, 2)};
+
+export const MANUAL_SHEETS: ReadonlyArray<ManualSheetEntry> = ${JSON.stringify(manualEntries, null, 2)};
 `;
   fs.writeFileSync(destManifest, manifest, "utf-8");
-  console.log(`[copy-frames] wrote ${entries.length} entries to ${destManifest}`);
+  console.log(`[copy-frames] wrote ${entries.length} entries and ${manualEntries.length} manual entries to ${destManifest}`);
 }
 
 main();

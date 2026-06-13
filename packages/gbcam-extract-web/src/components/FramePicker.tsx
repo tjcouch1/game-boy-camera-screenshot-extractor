@@ -41,6 +41,7 @@ import {
 } from "@/shadcn/components/accordion";
 import { useIsMobile } from "../hooks/useIsMobile.js";
 import { useLocalStorage } from "../hooks/useLocalStorage.js";
+import { MANUAL_SHEETS } from "../generated/FrameSheets.js";
 import type { FrameSelection } from "../types/frame-selection.js";
 import { frameDisplayName } from "../utils/frame-display.js";
 import {
@@ -318,38 +319,17 @@ export function FramePicker({
     [],
   );
 
-  const [openedStems, setOpenedStems] = useState<Set<string>>(new Set());
+  const [openedIds, setOpenedIds] = useState<Set<string>>(new Set());
 
-  const hasUsa = useMemo(
-    () => frames.some((f) => f.sheetStem === "Frames_USA"),
-    [frames],
-  );
-  const hasJpn = useMemo(
-    () => frames.some((f) => f.sheetStem === "Frames_JPN"),
-    [frames],
-  );
-
-  const regionalSheets = [
-    {
-      id: "usa",
-      label: "Add Original Frames (USA)",
-      url: "https://www.spriters-resource.com/media/assets/124/126906.png",
-      stem: "Frames_USA",
-      hidden: hasUsa,
-    },
-    {
-      id: "jpn",
-      label: "Add Original Frames (JPN)",
-      url: "https://www.spriters-resource.com/media/assets/124/126905.png",
-      stem: "Frames_JPN",
-      hidden: hasJpn,
-    },
-  ].filter((s) => !s.hidden);
+  const manualSheets = useMemo(() => {
+    const presentStems = new Set(frames.map((f) => f.sheetStem));
+    return MANUAL_SHEETS.filter((s) => !presentStems.has(s.stem));
+  }, [frames]);
 
   const processManualImage = useCallback(
-    async (image: GBImageData, stem: string) => {
-      const isRegional = regionalStems.has(stem);
-      const addMethod = isRegional ? onAddOriginalFrames : onAddUserFrames;
+    async (image: GBImageData, stem: string, storage: "original" | "custom") => {
+      const addMethod =
+        storage === "original" ? onAddOriginalFrames : onAddUserFrames;
 
       if (!addMethod) return;
       const detected = detectAndLoadFrames(image, stem);
@@ -378,12 +358,11 @@ export function FramePicker({
         toast.info(`No new frames found in ${stem} (all were duplicates).`);
       }
     },
-    [frames, onAddUserFrames, onAddOriginalFrames, regionalStems],
+    [frames, onAddUserFrames, onAddOriginalFrames],
   );
 
-
-  const handleRegionalPaste = useCallback(
-    async (stem: string) => {
+  const handlePaste = useCallback(
+    async (stem: string, storage: "original" | "custom") => {
       try {
         const items = await navigator.clipboard.read();
         for (const item of items) {
@@ -391,7 +370,7 @@ export function FramePicker({
             if (type.startsWith("image/")) {
               const blob = await item.getType(type);
               const image = await fileToGBImageData(blob as File);
-              await processManualImage(image, stem);
+              await processManualImage(image, stem, storage);
               return;
             }
           }
@@ -408,30 +387,38 @@ export function FramePicker({
   );
 
   const regionalFilesRef = useRef<HTMLInputElement>(null);
-  const [activeRegionalStem, setActiveRegionalStem] = useState<string | null>(
-    null,
+  const [activeManualSheet, setActiveManualSheet] = useState<{
+    stem: string;
+    storage: "original" | "custom";
+  } | null>(null);
+
+  const handleManualUploadClick = useCallback(
+    (stem: string, storage: "original" | "custom") => {
+      setActiveManualSheet({ stem, storage });
+      regionalFilesRef.current?.click();
+    },
+    [],
   );
 
-  const handleRegionalUploadClick = useCallback((stem: string) => {
-    setActiveRegionalStem(stem);
-    regionalFilesRef.current?.click();
-  }, []);
-
-  const handleRegionalFiles = useCallback(
+  const handleManualFiles = useCallback(
     async (fileList: FileList | null) => {
-      if (!fileList || fileList.length === 0 || !activeRegionalStem) return;
+      if (!fileList || fileList.length === 0 || !activeManualSheet) return;
       const file = fileList[0];
       if (regionalFilesRef.current) regionalFilesRef.current.value = "";
       try {
         const image = await fileToGBImageData(file);
-        await processManualImage(image, activeRegionalStem);
+        await processManualImage(
+          image,
+          activeManualSheet.stem,
+          activeManualSheet.storage,
+        );
       } catch (err) {
         toast.error(`${file.name}: ${err instanceof Error ? err.message : "Unknown error"}`);
       } finally {
-        setActiveRegionalStem(null);
+        setActiveManualSheet(null);
       }
     },
-    [activeRegionalStem, processManualImage],
+    [activeManualSheet, processManualImage],
   );
 
   const select = useCallback(
@@ -607,14 +594,14 @@ export function FramePicker({
           </div>
         </>
       )}
-      {customEnabled && regionalSheets.length > 0 && (
+      {customEnabled && manualSheets.length > 0 && (
         <div className="mt-4">
           <Accordion
             multiple
             value={activeAccordions}
             onValueChange={setActiveAccordions}
           >
-            {regionalSheets.map((region) => (
+            {manualSheets.map((region) => (
               <AccordionItem key={region.id} value={region.id}>
                 <AccordionTrigger className="py-2 text-sm">
                   {region.label}
@@ -632,7 +619,7 @@ export function FramePicker({
                         rel="noopener noreferrer"
                         className={cn(
                           buttonVariants({
-                            variant: openedStems.has(region.stem)
+                            variant: openedIds.has(region.id)
                               ? "secondary"
                               : "default",
                             size: "sm",
@@ -640,9 +627,7 @@ export function FramePicker({
                           "flex-1 min-w-[100px]",
                         )}
                         onClick={() =>
-                          setOpenedStems(
-                            (prev) => new Set([...prev, region.stem]),
-                          )
+                          setOpenedIds((prev) => new Set([...prev, region.id]))
                         }
                       >
                         <ExternalLink data-icon="inline-start" />
@@ -653,11 +638,11 @@ export function FramePicker({
                       </span>
                       <Button
                         variant={
-                          openedStems.has(region.stem) ? "default" : "secondary"
+                          openedIds.has(region.id) ? "default" : "secondary"
                         }
                         size="sm"
                         className="flex-1 min-w-[100px]"
-                        onClick={() => handleRegionalPaste(region.stem)}
+                        onClick={() => handlePaste(region.stem, region.storage)}
                       >
                         <ClipboardPaste data-icon="inline-start" />
                         Paste
@@ -667,11 +652,13 @@ export function FramePicker({
                       </span>
                       <Button
                         variant={
-                          openedStems.has(region.stem) ? "default" : "secondary"
+                          openedIds.has(region.id) ? "default" : "secondary"
                         }
                         size="sm"
                         className="flex-1 min-w-[100px]"
-                        onClick={() => handleRegionalUploadClick(region.stem)}
+                        onClick={() =>
+                          handleManualUploadClick(region.stem, region.storage)
+                        }
                       >
                         <Upload data-icon="inline-start" />
                         Upload
@@ -688,14 +675,24 @@ export function FramePicker({
         <>
           <div className="mt-3 mb-2 flex items-center justify-between gap-2">
             <h4 className="text-sm font-semibold">Custom frames</h4>
-            <Button
-              variant="secondary"
-              size="sm"
-              onClick={handleUploadClick}
-            >
-              <Upload data-icon="inline-start" />
-              Upload
-            </Button>
+            <div className="flex gap-2">
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => handlePaste("custom-frame", "custom")}
+              >
+                <ClipboardPaste data-icon="inline-start" />
+                Paste
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={handleUploadClick}
+              >
+                <Upload data-icon="inline-start" />
+                Upload
+              </Button>
+            </div>
           </div>
           {customs.length === 0 ? (
             <p className="text-xs text-muted-foreground">
@@ -733,7 +730,7 @@ export function FramePicker({
             type="file"
             accept="image/png,image/jpeg,image/webp,image/gif"
             className="hidden"
-            onChange={(e) => handleRegionalFiles(e.target.files)}
+            onChange={(e) => handleManualFiles(e.target.files)}
           />
         </>
       )}

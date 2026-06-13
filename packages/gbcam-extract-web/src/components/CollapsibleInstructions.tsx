@@ -37,17 +37,17 @@ export function CollapsibleInstructions({ markdown }: { markdown: string }) {
         />
       </CollapsibleTrigger>
       <CollapsibleContent>
-        <div className="max-h-96 overflow-y-auto p-4">
+        <div className="max-h-96 overflow-y-auto p-4 border-b border-border">
           <MarkdownRenderer markdown={markdown} />
         </div>
-        <div className="p-4 border-t border-border">
+        <div className="p-3 px-4 bg-muted/30">
           <p className="text-xs text-muted-foreground">
             Original frame sheets sourced from{" "}
             <a
               href="./licenses.html#the-spriters-resource"
               target="_blank"
               rel="noopener noreferrer"
-              className="text-primary hover:underline"
+              className="text-primary hover:underline font-medium"
             >
               The Spriters Resource
             </a>

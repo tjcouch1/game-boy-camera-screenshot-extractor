@@ -425,6 +425,7 @@ function generateHtmlLicensesPage(
 
     .package-info-value {
       color: #9ca3af;
+      white-space: pre-wrap;
     }
 
     .package-info-value a {

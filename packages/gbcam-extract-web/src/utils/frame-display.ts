@@ -45,9 +45,8 @@ export function frameDisplayName(frame: Frame, allFrames?: Frame[]): string {
   if (!isRegional)
     return `${prefix} ${frame.index} (${regionFromStem(frame.sheetStem)})`;
 
-  // If we don't have the context of other frames, assume collision and show region.
-  if (!allFrames)
-    return `${prefix} ${frame.index} (${regionFromStem(frame.sheetStem)})`;
+  // If we don't have the context of other frames, assume no collision.
+  if (!allFrames || allFrames.length === 0) return `${prefix} ${frame.index}`;
 
   // Only show region if another regional frame exists with the same index.
   const hasCollision = allFrames.some(
