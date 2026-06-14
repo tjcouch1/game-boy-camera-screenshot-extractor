@@ -163,7 +163,9 @@ Create a PR merging `main` into `production` branch. Once this is merged, `deplo
 
 1. Publish the website to GitHub Pages
 2. Create a release in GitHub
-3. Bump the minor versions in the `package.json` files
+3. Create a PR to bump the minor versions in the `package.json` files
+
+You need to merge that PR immediately so that the last commit that has the old version is the one with the code in that release.
 
 # Python development instructions
 
