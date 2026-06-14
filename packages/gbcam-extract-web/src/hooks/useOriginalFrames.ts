@@ -7,6 +7,17 @@ import {
   type UserFrameEntry,
 } from "./frameCodec.js";
 
+/** Calculate a fast fingerprint (hash) of the pixel data to identify duplicates. */
+export function frameFingerprint(frame: Frame): string {
+  const bytes = new Uint8Array(frame.pixels.buffer, frame.pixels.byteOffset, frame.pixels.byteLength);
+  let h = 0x811c9dc5; // FNV-1a 32-bit offset basis
+  for (let i = 0; i < bytes.length; i++) {
+    h ^= bytes[i];
+    h = Math.imul(h, 0x01000193); // FNV-1a 32-bit prime
+  }
+  return (h >>> 0).toString(16);
+}
+
 const STORAGE_KEY = "gbcam-original-frames";
 const STORAGE_VERSION = "1";
 const STORAGE_VERSION_KEY = "gbcam-original-frames-version";
@@ -86,8 +97,8 @@ export function useOriginalFrames(): UseOriginalFramesResult {
       if (newFrames.length === 0) return { added: 0 };
 
       // Dedupe against current state to prevent duplicate uploads.
-      const currentHashes = new Set(decodedFrames.map((f) => f.id));
-      const uniqueNew = newFrames.filter((f) => !currentHashes.has(f.id));
+      const currentHashes = new Set(decodedFrames.map((f) => frameFingerprint(f)));
+      const uniqueNew = newFrames.filter((f) => !currentHashes.has(frameFingerprint(f)));
       if (uniqueNew.length === 0) return { added: 0 };
 
       const newEntries: UserFrameEntry[] = [];

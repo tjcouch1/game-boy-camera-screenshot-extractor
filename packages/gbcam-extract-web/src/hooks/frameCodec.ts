@@ -57,6 +57,14 @@ export function frameToPngDataUrl(frame: Frame): string {
   return canvas.toDataURL("image/png");
 }
 
+/** Snap a 0–255 value to the nearest of {0, 82, 165, 255}. */
+function snapToGB(v: number): number {
+  if (v < 41) return 0;
+  if (v < 124) return 82;
+  if (v < 210) return 165;
+  return 255;
+}
+
 /** Decode a UserFrameEntry's PNG data URL back into a Frame. */
 export function pngDataUrlToFrame(entry: UserFrameEntry): Promise<Frame> {
   return new Promise((resolve, reject) => {
@@ -75,9 +83,10 @@ export function pngDataUrlToFrame(entry: UserFrameEntry): Promise<Frame> {
         const imageData = ctx.getImageData(0, 0, entry.width, entry.height);
         const pixels = new Uint8ClampedArray(entry.width * entry.height);
         // The PNG was encoded with R = G = B = pixel value, so the R channel
-        // round-trips the original grayscale value losslessly.
+        // round-trips the original grayscale value. Snap it to correct for
+        // browser color management shifts (e.g. 82 -> 81).
         for (let i = 0; i < pixels.length; i++) {
-          pixels[i] = imageData.data[i * 4];
+          pixels[i] = snapToGB(imageData.data[i * 4]);
         }
         const frame: Frame = {
           id: entry.id,

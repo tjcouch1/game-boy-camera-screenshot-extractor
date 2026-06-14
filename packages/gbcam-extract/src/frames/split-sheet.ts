@@ -179,8 +179,37 @@ export function splitSheet(sheet: GBImageData, sheetStem: string): Frame[] {
     });
   }
 
+  // Filter out components that are fully contained within another candidate.
+  // This happens if a distinct inner shape (like the hole itself) is isolated
+  // from the bezel by a border, forming its own connected component.
+  const validCandidates = candidates.filter((c, i) => {
+    for (let j = 0; j < candidates.length; j++) {
+      if (i === j) continue;
+      const o = candidates[j];
+      if (
+        c.bbox.x0 >= o.bbox.x0 &&
+        c.bbox.y0 >= o.bbox.y0 &&
+        c.bbox.x1 <= o.bbox.x1 &&
+        c.bbox.y1 <= o.bbox.y1
+      ) {
+        // If they are identical, keep the first one.
+        if (
+          c.bbox.x0 === o.bbox.x0 &&
+          c.bbox.y0 === o.bbox.y0 &&
+          c.bbox.x1 === o.bbox.x1 &&
+          c.bbox.y1 === o.bbox.y1
+        ) {
+          if (i > j) return false;
+        } else {
+          return false; // strictly contained
+        }
+      }
+    }
+    return true;
+  });
+
   // Sort top-to-bottom, then left-to-right.
-  candidates.sort((a, b) => {
+  validCandidates.sort((a, b) => {
     if (a.bbox.y0 !== b.bbox.y0) return a.bbox.y0 - b.bbox.y0;
     return a.bbox.x0 - b.bbox.x0;
   });
@@ -189,7 +218,7 @@ export function splitSheet(sheet: GBImageData, sheetStem: string): Frame[] {
   let normalIdx = 0;
   let wildIdx = 0;
   const frames: Frame[] = [];
-  for (const c of candidates) {
+  for (const c of validCandidates) {
     const w = c.bbox.x1 - c.bbox.x0;
     const h = c.bbox.y1 - c.bbox.y0;
     const type: "normal" | "wild" =

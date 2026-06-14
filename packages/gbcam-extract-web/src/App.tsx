@@ -75,6 +75,7 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/shadcn/components/dialog";
+import { TooltipProvider } from "@/shadcn/components/tooltip";
 import { useServiceWorker } from "./hooks/useServiceWorker.js";
 
 interface BeforeInstallPromptEvent extends Event {
@@ -572,75 +573,6 @@ export default function App() {
                       Download All ({results.length})
                     </Button>
                   )}
-                  <Field orientation="horizontal" className="w-auto gap-2">
-                    <FieldLabel htmlFor="output-scale">
-                      Output Scale:
-                    </FieldLabel>
-                    <Select
-                      value={String(outputScale)}
-                      onValueChange={(v) => {
-                        if (typeof v === "string")
-                          setOutputScale(parseInt(v, 10));
-                      }}
-                    >
-                      <SelectTrigger id="output-scale" className="w-fit">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          <SelectItem value="1">1x (128x112)</SelectItem>
-                          <SelectItem value="2">2x (256x224)</SelectItem>
-                          <SelectItem value="3">3x (384x336)</SelectItem>
-                          <SelectItem value="4">4x (512x448)</SelectItem>
-                          <SelectItem value="8">8x (1024x896)</SelectItem>
-                          <SelectItem value="16">16x (2048x1792)</SelectItem>
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field orientation="horizontal" className="w-auto gap-2">
-                    <FieldLabel htmlFor="preview-scale">
-                      Preview Scale:
-                    </FieldLabel>
-                    <Select
-                      value={String(previewScale)}
-                      onValueChange={(v) => {
-                        if (typeof v === "string")
-                          setPreviewScale(parseInt(v, 10));
-                      }}
-                    >
-                      <SelectTrigger id="preview-scale" className="w-fit">
-                        <span className="flex flex-1 text-start">
-                          {previewScale}x
-                        </span>
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          <SelectItem value="1">1x (128x112)</SelectItem>
-                          <SelectItem value="2">2x (256x224)</SelectItem>
-                          <SelectItem value="3">3x (384x336)</SelectItem>
-                          <SelectItem value="4">4x (512x448)</SelectItem>
-                          <SelectItem value="8">8x (1024x896)</SelectItem>
-                          <SelectItem value="16">16x (2048x1792)</SelectItem>
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field orientation="horizontal" className="w-auto gap-2">
-                    <FieldLabel>Default Frame:</FieldLabel>
-                    <FramePicker
-                      value={defaultFrame}
-                      onChange={setDefaultFrame}
-                      palette={paletteEntry.colors}
-                      frames={catalog.frames}
-                      mode="default"
-                      disabled={catalog.status !== "ready"}
-                      userFrameIds={catalog.userFrameIds}
-                      onAddUserFrames={catalog.addUserFrames}
-                      onAddOriginalFrames={catalog.addOriginalFrames}
-                      onDeleteUserFrame={handleDeleteUserFrame}
-                    />
-                  </Field>
                 </div>
 
                 <div className="grid gap-4">

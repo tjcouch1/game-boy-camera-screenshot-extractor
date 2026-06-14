@@ -41,6 +41,12 @@ import {
 } from "@/shadcn/components/accordion";
 import { useIsMobile } from "../hooks/useIsMobile.js";
 import { useLocalStorage } from "../hooks/useLocalStorage.js";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/shadcn/components/tooltip";
+import { useClipboardPermission } from "../hooks/useClipboardPermission.js";
 import { MANUAL_SHEETS } from "../generated/FrameSheets.js";
 import type { FrameSelection } from "../types/frame-selection.js";
 import { frameDisplayName } from "../utils/frame-display.js";
@@ -277,9 +283,15 @@ export function FramePicker({
   // Sort frames: USA first, then JPN, then others.
   // Within those, Normal then Wild, then numeric index.
   const sortedFrames = useMemo(() => {
+    const getPrimaryRegion = (f: Frame) => {
+      if (f.aliasStems.includes("Frames_USA")) return "USA";
+      if (f.aliasStems.includes("Frames_JPN")) return "JPN";
+      return regionFromStem(f.sheetStem);
+    };
+
     return [...frames].sort((a, b) => {
-      const regA = regionFromStem(a.sheetStem);
-      const regB = regionFromStem(b.sheetStem);
+      const regA = getPrimaryRegion(a);
+      const regB = getPrimaryRegion(b);
 
       if (regA !== regB) {
         if (regA === "USA") return -1;
@@ -336,6 +348,7 @@ export function FramePicker({
   );
 
   const [openedIds, setOpenedIds] = useState<Set<string>>(new Set());
+  const clipboardPermission = useClipboardPermission();
 
   const manualSheets = useMemo(() => {
     const presentStems = new Set(frames.map((f) => f.sheetStem));
@@ -704,14 +717,28 @@ export function FramePicker({
           <div className="mt-3 mb-2 flex items-center justify-between gap-2">
             <h4 className="text-sm font-semibold">Custom frames</h4>
             <div className="flex gap-2">
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => handlePaste("custom-frame", "custom")}
-              >
-                <ClipboardPaste data-icon="inline-start" />
-                Paste
-              </Button>
+              {clipboardPermission === "denied" ? (
+                <Tooltip>
+                  <TooltipTrigger render={<div />}>
+                    <Button variant="secondary" size="sm" disabled>
+                      <ClipboardPaste data-icon="inline-start" />
+                      Paste
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    Enable Clipboard permissions to paste frames
+                  </TooltipContent>
+                </Tooltip>
+              ) : (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onClick={() => handlePaste("custom-frame", "custom")}
+                >
+                  <ClipboardPaste data-icon="inline-start" />
+                  Paste
+                </Button>
+              )}
               <Button
                 variant="secondary"
                 size="sm"
