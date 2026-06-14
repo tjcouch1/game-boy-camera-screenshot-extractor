@@ -81,6 +81,20 @@ export function detectAndLoadFrames(
   image: GBImageData,
   stem: string,
 ): Frame[] {
+  // If the image is exactly 160x144 or 160x224, it's guaranteed to be a single normal or wild frame.
+  // Don't even try splitSheet, because the top-left pixel is bezel art, not a sheet background,
+  // which causes splitSheet to hallucinate garbage frames.
+  if ((image.width === 160 && image.height === 144) || (image.width === 160 && image.height === 224)) {
+    try {
+      const f = loadIndividualFrame(image, stem);
+      console.log(`[detect] ${stem}: ${image.width}x${image.height} fast-path found hole at (${f.holeX}, ${f.holeY}).`);
+      return [f];
+    } catch (err) {
+      console.warn(`[detect] ${stem}: ${image.width}x${image.height} fast-path failed.`, err);
+      // Fall through to try other methods just in case it's a weird edge case.
+    }
+  }
+
   let sheetFrames: Frame[] = [];
   try {
     sheetFrames = splitSheet(image, stem);
