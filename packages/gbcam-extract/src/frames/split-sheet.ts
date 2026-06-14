@@ -164,6 +164,13 @@ export function splitSheet(sheet: GBImageData, sheetStem: string): Frame[] {
     let frameY1 = foundY + HOLE_H;
     while (frameY1 < H && !bgMask[frameY1 * W + foundX]) frameY1++;
 
+    const frameW = frameX1 - frameX0;
+    const frameH = frameY1 - frameY0;
+
+    // A valid frame MUST have a bezel; if it's exactly the size of the hole,
+    // it's just a placeholder or a mis-detected region.
+    if (frameW <= HOLE_W && h <= HOLE_H) continue;
+
     const tightBbox: BBox = { x0: frameX0, y0: frameY0, x1: frameX1, y1: frameY1 };
     candidates.push({
       bbox: tightBbox,
