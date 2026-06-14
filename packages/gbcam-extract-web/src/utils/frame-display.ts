@@ -58,7 +58,9 @@ export function frameDisplayName(frame: Frame, allFrames?: Frame[]): string {
       (f.sheetStem === "Frames_USA" || f.sheetStem === "Frames_JPN"),
   );
 
-  if (!hasCollision && regionFromStem(frame.sheetStem) !== "JPN")
+  const hasUsa = allFrames.some((f) => regionFromStem(f.sheetStem) === "USA");
+
+  if (!hasCollision && (regionFromStem(frame.sheetStem) !== "JPN" || !hasUsa))
     return `${prefix} ${frame.index}`;
 
   return `${prefix} ${frame.index} (${regionFromStem(frame.sheetStem)})`;

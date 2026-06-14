@@ -268,15 +268,31 @@ export function FramePicker({
 
   const regionalStems = useMemo(() => new Set(["Frames_USA", "Frames_JPN"]), []);
 
-  // Sort frames so USA frames come first, then JPN frames, then others.
+  /** Extract a short region tag from a sheet stem. */
+  const regionFromStem = (stem: string): string => {
+    const match = stem.match(/_([A-Za-z0-9]+)$/);
+    return match ? match[1] : stem;
+  };
+
+  // Sort frames: USA first, then JPN, then others.
+  // Within those, Normal then Wild, then numeric index.
   const sortedFrames = useMemo(() => {
     return [...frames].sort((a, b) => {
-      if (a.sheetStem === b.sheetStem) return 0;
-      if (a.sheetStem === "Frames_USA") return -1;
-      if (b.sheetStem === "Frames_USA") return 1;
-      if (a.sheetStem === "Frames_JPN") return -1;
-      if (b.sheetStem === "Frames_JPN") return 1;
-      return 0;
+      const regA = regionFromStem(a.sheetStem);
+      const regB = regionFromStem(b.sheetStem);
+
+      if (regA !== regB) {
+        if (regA === "USA") return -1;
+        if (regB === "USA") return 1;
+        if (regA === "JPN") return -1;
+        if (regB === "JPN") return 1;
+      }
+
+      if (a.type !== b.type) {
+        return a.type === "normal" ? -1 : 1;
+      }
+
+      return a.index - b.index;
     });
   }, [frames]);
 
@@ -316,7 +332,7 @@ export function FramePicker({
 
   const [activeAccordions, setActiveAccordions] = useLocalStorage<string[]>(
     "gbcam-frame-picker-accordions",
-    [],
+    ["usa", "jpn"],
   );
 
   const [openedIds, setOpenedIds] = useState<Set<string>>(new Set());
@@ -768,11 +784,26 @@ export function FramePicker({
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <DialogClose render={<Button variant="secondary" />}>
+          <DialogClose
+            render={
+              <Button
+                variant="secondary"
+                onClick={(e) => e.stopPropagation()}
+              />
+            }
+          >
             Cancel
           </DialogClose>
           <DialogClose
-            render={<Button variant="destructive" onClick={confirmDelete} />}
+            render={
+              <Button
+                variant="destructive"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  confirmDelete();
+                }}
+              />
+            }
           >
             Delete
           </DialogClose>

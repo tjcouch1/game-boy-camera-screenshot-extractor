@@ -169,7 +169,7 @@ export function splitSheet(sheet: GBImageData, sheetStem: string): Frame[] {
 
     // A valid frame MUST have a bezel; if it's exactly the size of the hole,
     // it's just a placeholder or a mis-detected region.
-    if (frameW <= HOLE_W && h <= HOLE_H) continue;
+    if (frameW <= HOLE_W && frameH <= HOLE_H) continue;
 
     const tightBbox: BBox = { x0: frameX0, y0: frameY0, x1: frameX1, y1: frameY1 };
     candidates.push({

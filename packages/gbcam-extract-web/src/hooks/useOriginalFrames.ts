@@ -82,10 +82,16 @@ export function useOriginalFrames(): UseOriginalFramesResult {
   }, [entries]);
 
   const addFrames = useCallback(
-    (frames: Frame[]): { added: number } => {
-      if (frames.length === 0) return { added: 0 };
+    (newFrames: Frame[]): { added: number } => {
+      if (newFrames.length === 0) return { added: 0 };
+
+      // Dedupe against current state to prevent duplicate uploads.
+      const currentHashes = new Set(decodedFrames.map((f) => f.id));
+      const uniqueNew = newFrames.filter((f) => !currentHashes.has(f.id));
+      if (uniqueNew.length === 0) return { added: 0 };
+
       const newEntries: UserFrameEntry[] = [];
-      for (const f of frames) {
+      for (const f of uniqueNew) {
         try {
           newEntries.push({
             id: generateId(),
