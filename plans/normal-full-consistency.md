@@ -113,6 +113,24 @@ Results: tier-1 normal/full and self-consistency **completely unchanged**
 `184719` 7.7→3.6 px, `184739` 7.9→2.3 px (dashes back at the outer edge,
 doubling gone); `184650` (which converged) untouched.
 
+## Shipped change 3 — local adaptive WH/LG threshold (`quantize.ts`)
+
+On `184650` a whole interior region of WH/LG **dither** flattened to solid
+LG (WH dots lost). Cause: the front-light gradient leaves WH spatially
+varying — that region's WH is dimmed to G≈210 while bright WH elsewhere is
+G≈250. The histogram of high-R G is then *trimodal* (LG≈130, dim-WH≈210,
+bright-WH≈250) and the single global G-valley lands at 231 (just under the
+bright-WH spike), demoting every dim-WH dot to LG.
+
+Fix: a windowed (radius 6) per-pixel WH/LG threshold taken from the local
+warm-pixel G valley (same robust two-mode + deep-dip test as the per-column
+step). Gated to fire ONLY where the local would-be-WH mode sits at/below the
+global threshold — the "spatially-dimmed WH" signature — so well-exposed
+regions (where the global already classifies the local bright mode as WH)
+are skipped. Tier-1 normal/full and self-consistency are **byte-identical**
+to before; `184650` recovers 354 dither pixels (checkerboard restored,
+confirmed visually). Env-overridable (`LOCALWH_RADIUS`).
+
 ## Remaining floor / ideas not pursued
 
 - prison's residual LG→DG blob is sparse, top-edge, surrounded by WH/BK
