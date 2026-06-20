@@ -85,6 +85,34 @@ Net −6 combined tier-1 errors with **both** paths and consistency improved.
 red for 5/6 of those images on `main`; this change keeps the count at 5
 (thing-1 now fails where zelda-2 now passes).
 
+## Shipped change 2 — warp refinement divergence guard (`warp.ts`)
+
+Some full-photo warps placed the **left inner border ~1 GB pixel too far
+right** (user-measured ~−7 px corner offsets; a doubled/folded left border).
+Traced to the two perspective-refinement passes: on a biased edge (a blurry
+or doubled border — e.g. the dim leftmost B sub-pixel column muddying the
+WH→LCD transition) the correction feeds back *positively* and that edge's
+offset GROWS pass-over-pass (left edge 3.8 → 7.9 px) instead of converging.
+
+Crucial enabling fact: each refinement pass rebuilds the transform by
+back-projecting onto the **original** photo, so every pass output is an
+independent single resample (no accumulated blur). So the fix just keeps
+whichever pass is best-aligned: measure each pass's max per-edge border
+offset and default to the fully-refined warp2, falling back to an earlier
+pass only when it is better by a margin (1.5 px). Convergent images (every
+reliable photo) always have warp2 best → **unchanged**.
+
+- RMSE-gating was tried first and rejected: park-1's left edge has the same
+  high border-fit RMSE (≈6) as the broken private images while its
+  correction is *needed and correct*, so reliability-gating breaks park
+  (1→900). Divergence (does the edge get worse across passes?) is the
+  correct discriminator; RMSE (scatter) is not.
+
+Results: tier-1 normal/full and self-consistency **completely unchanged**
+(guard never fires on convergent images); private left-border residuals
+`184719` 7.7→3.6 px, `184739` 7.9→2.3 px (dashes back at the outer edge,
+doubling gone); `184650` (which converged) untouched.
+
 ## Remaining floor / ideas not pursued
 
 - prison's residual LG→DG blob is sparse, top-edge, surrounded by WH/BK
