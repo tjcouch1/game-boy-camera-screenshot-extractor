@@ -33,13 +33,15 @@ PIPELINE DIAGNOSTICS
   [crop] inner-border mean=175.9 white-frame mean=213.0 (ratio 0.825, OK)
   [sample] R: 35–255  G: 0–255  B: 97–255
   [sample] subpixel cols (scale=8): B=[1,3) G=[3,5) R=[6,8) vMargin=1
-  [quantize] global k-means cluster centers (palette-ordered):  BK=(R90,G30)  DG=(R135,G154)  LG=(R215,G187)  WH=(R195,G252)
+  [quantize] global k-means cluster centers (palette-ordered):  BK=(R90,G30)  DG=(R133,G154)  LG=(R215,G187)  WH=(R195,G252)
   [quantize] after global kmeans: BK=1336  DG=8612  LG=2675  WH=1713
-  [quantize] strip ensemble: 7 strips, changed 49 px  now: BK=1336  DG=8621  LG=2673  WH=1706
+  [quantize] strip ensemble: 7 strips, changed 47 px  now: BK=1336  DG=8619  LG=2675  WH=1706
   [quantize] G-valley refinement: threshold=234.0 (LG center G=187.2, WH center G=251.7), changed 22 px
   [quantize] B reclassify: dgMeanB=235.9 warmMeanB=217.5 flipDg->warm=0 flipWarm->dg=1
-  [quantize] confidence refine pass 1: 13367/14336 pixels confident, 4 ambiguous pixels reclassified via similar-RGB neighbour vote
-  [quantize] confidence refine pass 2: 13362/14336 pixels confident, 0 ambiguous pixels reclassified via similar-RGB neighbour vote
+  [quantize] confidence refine pass 1: 13372/14336 pixels confident, 4 ambiguous pixels reclassified via similar-RGB neighbour vote
+  [quantize] confidence refine pass 2: 13364/14336 pixels confident, 1 ambiguous pixels reclassified via similar-RGB neighbour vote
+  [quantize] confidence refine pass 3: 13364/14336 pixels confident, 1 ambiguous pixels reclassified via similar-RGB neighbour vote
+  [quantize] confidence refine pass 4: 13363/14336 pixels confident, 0 ambiguous pixels reclassified via similar-RGB neighbour vote
   [quantize] final: BK=1336 (9.3%)  DG=8626 (60.2%)  LG=2691 (18.8%)  WH=1683 (11.7%)
 
 ======================================================================
