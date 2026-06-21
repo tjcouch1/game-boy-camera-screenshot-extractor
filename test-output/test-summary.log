@@ -7,10 +7,10 @@ CORPUS SUMMARY — test-input
 
   Test             Matching            Different           Verdict
   ----------------------------------------------------------------
-  bathhouse-1      14332 ( 99.97%)       4 (  0.03%)   FAIL
+  bathhouse-1      14333 ( 99.98%)       3 (  0.02%)   FAIL
   park-1           14335 ( 99.99%)       1 (  0.01%)   FAIL
-  prison-1         14326 ( 99.93%)      10 (  0.07%)   FAIL
-  thing-1          14332 ( 99.97%)       4 (  0.03%)   FAIL
+  prison-1         14328 ( 99.94%)       8 (  0.06%)   FAIL
+  thing-1          14333 ( 99.98%)       3 (  0.02%)   FAIL
   thing-2          14335 ( 99.99%)       1 (  0.01%)   FAIL
   thing-3          14335 ( 99.99%)       1 (  0.01%)   FAIL
   zelda-poster-1   14335 ( 99.99%)       1 (  0.01%)   FAIL

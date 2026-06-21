@@ -72,6 +72,7 @@ export async function processPicture(
   onProgress?.("quantize", 0);
   const quantized = quantize(sampled, {
     corrected,
+    warped,
     scale,
     debug: collector,
   });

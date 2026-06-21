@@ -12,6 +12,8 @@ import {
   GB_COLORS,
   CAM_W,
   CAM_H,
+  FRAME_THICK,
+  SCREEN_W,
   createGBImageData,
 } from "./common.js";
 import { getCV, withMats } from "./opencv.js";
@@ -37,6 +39,14 @@ export interface QuantizeOptions {
    * provided.
    */
   corrected?: GBImageData;
+  /**
+   * Optional warped (pre-correct) RGBA image at (SCREEN_W*scale,
+   * SCREEN_H*scale). The `correct` step's affine gain amplifies bleed-lifted
+   * DG pixels' R upward across the DG/LG boundary; the pre-correct warp still
+   * separates DG (low R) from LG (high R) cleanly. Used to recover sparse
+   * DG-on-black dots that correct pushes into LG.
+   */
+  warped?: GBImageData;
   scale?: number;
   debug?: DebugCollector;
 }
@@ -1065,6 +1075,91 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
     }
     if (dbg && localFlipped > 0) {
       dbg.log(`[quantize] local adaptive WH/LG: ${localFlipped} pixels reclassified`);
+    }
+  }
+
+  // ── 3h. Recover sparse DG-on-black dots using the pre-correct warp.
+  // The `correct` step's affine gain amplifies a bleed-lifted DG pixel's R
+  // upward (warp R≈120 → sample R≈190), pushing isolated DG dots across the
+  // DG/LG boundary so they're mis-labelled LG. The PRE-correct warp still
+  // separates DG (low R) from LG (high R) cleanly — that signal is destroyed
+  // downstream. Per-pixel reclassification of these is otherwise impossible
+  // (in the ambiguous band LG outnumbers DG ~1000:1), but a DG dot has THREE
+  // independent signatures at once that a stray LG pixel does not:
+  //   (1) its warp R is closer to the DG mode than the LG mode,
+  //   (2) high B (the DG colour, B≈255 vs LG≈148), and
+  //   (3) it sits on a black background (≥3 BK neighbours — the sparse-dot
+  //       structure; LG lives among warm neighbours, not on black).
+  // Requiring all three keeps false flips to near-zero. All thresholds are
+  // derived from this image's own DG/LG statistics (no magic constants).
+  if (options?.warped) {
+    const wq = options.warped;
+    const sc = options?.scale ?? Math.round(wq.width / SCREEN_W);
+    const m0 = Math.max(1, Math.floor(sc / 4));
+    const m1 = Math.max(m0 + 1, Math.ceil((sc * 3) / 4));
+    // Mean warp R over the inner block of each camera pixel.
+    const warpRcam = new Float32Array(N);
+    for (let cy = 0; cy < CAM_H; cy++) {
+      for (let cx = 0; cx < CAM_W; cx++) {
+        const sx = (cx + FRAME_THICK) * sc;
+        const sy = (cy + FRAME_THICK) * sc;
+        let sum = 0, cnt = 0;
+        for (let yy = sy + m0; yy < sy + m1; yy++) {
+          for (let xx = sx + m0; xx < sx + m1; xx++) {
+            sum += wq.data[(yy * wq.width + xx) * 4];
+            cnt++;
+          }
+        }
+        warpRcam[cy * CAM_W + cx] = cnt > 0 ? sum / cnt : 0;
+      }
+    }
+    // Image-derived warp-R centroids of confidently-labelled DG and LG.
+    let dgSum = 0, dgN = 0, lgSum = 0, lgN = 0;
+    let dgBsum = 0, lgBsum = 0;
+    for (let i = 0; i < N; i++) {
+      if (finalLabels[i] === 1) { dgSum += warpRcam[i]; dgN++; dgBsum += input.data[i * 4 + 2]; }
+      else if (finalLabels[i] === 2) { lgSum += warpRcam[i]; lgN++; lgBsum += input.data[i * 4 + 2]; }
+    }
+    let dotsFixed = 0;
+    if (dgN >= 20 && lgN >= 20) {
+      const warpDgR = dgSum / dgN;
+      const warpLgR = lgSum / lgN;
+      const dgMeanB = dgBsum / dgN;
+      const lgMeanB = lgBsum / lgN;
+      // Only meaningful when the warp actually separates DG from LG in R and
+      // DG carries distinctly higher B than LG.
+      if (warpLgR - warpDgR > 40 && dgMeanB - lgMeanB > 20) {
+        // Warp-R cut at the midpoint of the DG/LG warp centroids = classify
+        // by nearest warp centroid (the natural boundary in the clean
+        // pre-correct space). BK-neighbour floor of 3 keeps false flips ~zero.
+        const FRAC = process.env.DOT_FRAC ? Number(process.env.DOT_FRAC) : 0.5;
+        const BKMIN = process.env.DOT_BK ? Number(process.env.DOT_BK) : 3;
+        const warpCut = warpDgR + (warpLgR - warpDgR) * FRAC;
+        const bCut = (dgMeanB + lgMeanB) / 2;
+        for (let cy = 0; cy < CAM_H; cy++) {
+          for (let cx = 0; cx < CAM_W; cx++) {
+            const i = cy * CAM_W + cx;
+            if (finalLabels[i] !== 2) continue;            // only output-LG
+            if (warpRcam[i] >= warpCut) continue;          // (1) warp R clearly DG
+            if (input.data[i * 4 + 2] <= bCut) continue;   // (2) high B (DG)
+            let bk = 0;                                      // (3) on black bg
+            for (let dy = -1; dy <= 1; dy++) {
+              for (let dx = -1; dx <= 1; dx++) {
+                if (!dx && !dy) continue;
+                const yy = cy + dy, xx = cx + dx;
+                if (yy < 0 || xx < 0 || yy >= CAM_H || xx >= CAM_W) continue;
+                if (finalLabels[yy * CAM_W + xx] === 0) bk++;
+              }
+            }
+            if (bk < BKMIN) continue;
+            finalLabels[i] = 1;
+            dotsFixed++;
+          }
+        }
+      }
+    }
+    if (dbg && dotsFixed > 0) {
+      dbg.log(`[quantize] warp-R DG-dot recovery: ${dotsFixed} pixels reclassified`);
     }
   }
 

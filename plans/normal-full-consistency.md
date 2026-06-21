@@ -150,6 +150,36 @@ tier-1 normal unchanged (24), tier-1 full **30→28** (park 3→2, thing-1
 5→4). `184650` recovers ~440 dither pixels (checkerboard restored).
 Env-overridable (`LOCALWH_RADIUS`).
 
+## Shipped change 4 — warp-R DG-dot recovery (`quantize.ts` + `index.ts`)
+
+The dominant remaining error is LG→DG: isolated true-DG dots (often on a
+black background) whose R is bleed-lifted into the LG range. Key insight
+(user): these dots are *clearly DG in the warp output* but get corrupted
+downstream — the `correct` step's affine gain amplifies the bleed-lifted R
+(warp R≈120 → sample R≈190), pushing them across the DG/LG boundary, and
+the pre-correct warp still separates DG (low R) from LG (high R) cleanly.
+
+Per-pixel reclassification is impossible here (in the ambiguous band LG
+outnumbers DG ~1000:1; B, G, even warp-R alone all net-negative — measured).
+The fix works because a DG dot has THREE independent signatures at once that
+a stray LG pixel does not, and requiring all three drives false flips to
+~zero:
+  1. its **warp R** (passed into quantize) is below the DG/LG warp-centroid
+     midpoint — i.e. nearest the DG mode in the clean pre-correct space;
+  2. **high B** (DG colour B≈255 vs LG≈148), above the DG/LG B-midpoint;
+  3. **≥3 BK neighbours** — the sparse-dot-on-black structure; LG lives
+     among warm neighbours, not on black.
+All thresholds are derived from the image's own DG/LG warp/B centroids (no
+magic constants). `index.ts` now passes `warped` into `quantize`.
+
+Results: tier-1 normal **24→20** (bathhouse 4→3, prison 10→8, thing-1 4→3),
+full **28→25** (prison 13→11, zelda-1 5→4); self-consistency improved
+(213443 64→58, 213416/213430/213510 each −1). **Zero regressions** on any
+corpus. (Note: this supersedes the earlier "DG/LG is an unfixable floor"
+conclusion — the floor holds for per-pixel/single-signal methods, but the
+3-signal combination with the warp signal breaks it for the DG-on-black
+subset.)
+
 ## Remaining floor / ideas not pursued
 
 - prison's residual LG→DG blob is sparse, top-edge, surrounded by WH/BK
