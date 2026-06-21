@@ -122,14 +122,33 @@ G≈250. The histogram of high-R G is then *trimodal* (LG≈130, dim-WH≈210,
 bright-WH≈250) and the single global G-valley lands at 231 (just under the
 bright-WH spike), demoting every dim-WH dot to LG.
 
-Fix: a windowed (radius 6) per-pixel WH/LG threshold taken from the local
-warm-pixel G valley (same robust two-mode + deep-dip test as the per-column
-step). Gated to fire ONLY where the local would-be-WH mode sits at/below the
-global threshold — the "spatially-dimmed WH" signature — so well-exposed
-regions (where the global already classifies the local bright mode as WH)
-are skipped. Tier-1 normal/full and self-consistency are **byte-identical**
-to before; `184650` recovers 354 dither pixels (checkerboard restored,
-confirmed visually). Env-overridable (`LOCALWH_RADIUS`).
+Fix: decide the LG/WH split from each pixel's LOCAL window — build the
+warm-pixel (LG/WH) G histogram in a radius-6 neighbourhood and, when it is
+genuinely bimodal (two G-modes + a real dip, same robust test as the
+per-column step), threshold at the local valley. The local WH and LG levels
+stay cleanly separated regardless of regional brightness, so the right split
+is recovered everywhere; uniform/non-bimodal windows make no change, and the
+outermost columns are left to the per-column step (3f).
+
+Two dead-ends ruled out first (this is the answer to "why not just use all
+the per-pixel data?"):
+- A per-pixel **2D RG-distance / nearest-centroid** restore breaks the bled
+  images (park full 3→17, prison 13→20): a bleed-lifted LG pixel and a
+  spatially-dimmed WH pixel have **near-identical colour** (both high G, far
+  from the LG centroid), so no per-pixel rule can separate them — only LOCAL
+  context can.
+- A **white-surface interior refinement in `correct`** (the root-cause
+  attempt) can't work: a global polynomial white surface either is too rigid
+  to capture a localized interior dip or oscillates and breaks tier-1; the
+  gate that protects tier-1 also blocks the fix.
+
+The local-valley step was first shipped with a narrow "only where the global
+demotes a bright mode" gate; removing that gate (deciding every bimodal
+warm window by its local valley) is strictly more general and **better**:
+tier-1 normal unchanged (24), tier-1 full **30→28** (park 3→2, thing-1
+1→0), self-consistency improved (`213443` 91→64, `165926` 2→1, `213416`
+5→4). `184650` recovers ~440 dither pixels (checkerboard restored).
+Env-overridable (`LOCALWH_RADIUS`).
 
 ## Remaining floor / ideas not pursued
 

@@ -47,8 +47,8 @@ PIPELINE DIAGNOSTICS
 COMPARISON SUMMARY
 ======================================================================
   Total pixels : 14336
-  Matching     : 14245  (99.37%)
-  Different    : 91   (0.63%)
+  Matching     : 14272  (99.55%)
+  Different    : 64   (0.45%)
 
 ----------------------------------------------------------------------
 COLOR DISTRIBUTION
@@ -56,8 +56,8 @@ COLOR DISTRIBUTION
   Color                     Result   Reference      Diff
   BK  #000000                 2452        2438  +14
   DG  #9494FF                 2583        2567  +16
-  LG  #FF9494                 4927        4925  +2
-  WH  #FFFFA5                 4374        4406  -32
+  LG  #FF9494                 4927        4952  -25
+  WH  #FFFFA5                 4374        4379  -5
 
 ----------------------------------------------------------------------
 CONFUSION MATRIX  (rows = pipeline result, cols = reference)
@@ -65,7 +65,7 @@ CONFUSION MATRIX  (rows = pipeline result, cols = reference)
   Result / Ref             BK  #000000       DG  #9494FF       LG  #FF9494       WH  #FFFFA5   TOTAL
   BK  #000000                    2438 v               11 X                3 X                0      2452
   DG  #9494FF                       0               2547 v               36 X                0      2583
-  LG  #FF9494                       0                  9 X             4886 v               32 X    4927
+  LG  #FF9494                       0                  9 X             4913 v                5 X    4927
   WH  #FFFFA5                       0                  0                  0               4374 v    4374
 
 ----------------------------------------------------------------------
@@ -75,14 +75,14 @@ ERROR BREAKDOWN  (result -> reference)
   BK  #000000  ->  LG  #FF9494 : 3 px
   DG  #9494FF  ->  LG  #FF9494 : 36 px
   LG  #FF9494  ->  DG  #9494FF : 9 px
-  LG  #FF9494  ->  WH  #FFFFA5 : 32 px
+  LG  #FF9494  ->  WH  #FFFFA5 : 5 px
 
 ======================================================================
 COMPARISON SUMMARY (reprint)
 ======================================================================
   Total pixels : 14336
-  Matching     : 14245  (99.37%)
-  Different    : 91   (0.63%)
+  Matching     : 14272  (99.55%)
+  Different    : 64   (0.45%)
 
 ======================================================================
 RESULT: FAIL — see diagnostics above and in the output directory.

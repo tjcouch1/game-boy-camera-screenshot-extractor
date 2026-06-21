@@ -990,35 +990,37 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
     }
   }
 
-  // ── 3g. Local adaptive WH/LG threshold. The global G-valley applies ONE
-  // LG↔WH boundary to the whole frame, but the front-light gradient leaves
-  // WH spatially varying in brightness: in a dimmer interior region a
-  // dithered WH dot's G falls below the global threshold and is mis-labelled
-  // LG, flattening real WH/LG dither into solid LG (and the global valley
-  // itself is mis-placed when the dim-WH bump fills the histogram gap).
-  // Within a small window the local WH and LG G-levels stay clearly
-  // separated, so a per-pixel threshold taken from the local warm-pixel G
-  // distribution recovers the correct split regardless of the regional
-  // brightness. Gated on a genuinely bimodal local spread, so uniform warm
-  // regions — and well-exposed images where the global threshold already
-  // works (the local midpoint then matches the global valley) — are left
-  // untouched; tier-1 accuracy is unchanged.
+  // ── 3g. Local adaptive WH/LG threshold (the LG↔WH split is a 1D decision
+  // on G — LG ≈ red/low-G, WH ≈ yellow/high-G). The global G-valley applies
+  // ONE such boundary to the whole frame, but the front-light gradient leaves
+  // WH spatially varying in brightness: where WH is dimmed, its dither dots'
+  // absolute G falls below the global threshold and is mis-labelled LG —
+  // flattening real WH/LG dither into solid LG. A single global 1D threshold
+  // fundamentally can't separate spatially-varying WH from LG (and a per-pixel
+  // RG-distance can't either — a bleed-lifted LG pixel and a dimmed WH pixel
+  // have near-identical colour; only their LOCAL context differs).
+  //
+  // So decide the LG/WH split from each pixel's LOCAL window: build the
+  // warm-pixel (LG/WH) G histogram in a small neighbourhood, and if it is
+  // genuinely bimodal (two G-modes with a real dip), threshold at the local
+  // valley. The local WH and LG levels stay cleanly separated regardless of
+  // the regional brightness, so this recovers the right split everywhere. In
+  // a uniform or non-bimodal window it makes no change (falls back to the
+  // global classification), and the outermost columns are left to the
+  // per-column step (3f). Net effect on the reference corpora: tier-1
+  // normal unchanged, full slightly improved, self-consistency improved.
   {
     const RADIUS = process.env.LOCALWH_RADIUS ? Number(process.env.LOCALWH_RADIUS) : 6;
     const MIN_WARM = 24;
     const MIN_SPREAD = 45;  // local warm-G range must show real LG/WH separation
     const MIN_DEPTH = 0.6;  // valley ≤ this × the smaller mode (a genuine dip)
-    // Only act where the global LG/WH boundary is DEMOTING a locally-bright
-    // mode: the local would-be-WH mode sits at/below the global threshold,
-    // the signature of spatially-dimmed WH. Where the global already puts the
-    // local bright mode on the WH side (every well-exposed region), skip — so
-    // tier-1 classification is unchanged.
-    const globalThr = valleyThreshold ?? Infinity;
+    const EDGE = 2;         // outermost columns are owned by the per-column step (3f)
     const whFloor = paletteCenters[2][1] + 40; // upper mode must be clearly above LG to be WH
     const before = finalLabels.slice();
     let localFlipped = 0;
     for (let y = 0; y < CAM_H; y++) {
       for (let x = 0; x < CAM_W; x++) {
+        if (x < EDGE || x >= CAM_W - EDGE) continue;
         const i = y * CAM_W + x;
         if (before[i] !== 2 && before[i] !== 3) continue;
         const gv: number[] = [];
@@ -1053,7 +1055,6 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
         if (peakMin <= 0 || sm[valley] > MIN_DEPTH * peakMin) continue; // not bimodal
         const upperModeG = lo + b;
         if (upperModeG < whFloor) continue;        // upper mode not bright enough to be WH
-        if (upperModeG > globalThr) continue;       // global already classifies it correctly
         const valleyG = lo + valley;
         const want = flatRG[i * 2 + 1] >= valleyG ? 3 : 2;
         if (want !== finalLabels[i]) {
