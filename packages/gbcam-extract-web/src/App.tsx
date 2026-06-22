@@ -173,7 +173,7 @@ export default function App() {
     if (selection.kind === "none") return "No frame";
     if (selection.kind === "default") return "Default";
     const f = catalog.getFrameById(selection.id);
-    return f ? frameDisplayName(f) : selection.id;
+    return f ? frameDisplayName(f, catalog.frames) : selection.id;
   }
 
   function resolveEffective(override: FrameSelection): Frame | null {
@@ -556,7 +556,7 @@ export default function App() {
                           const sanitizedPaletteName = sanitizePaletteName(paletteEntry.name);
                           const frameSlug = effective
                             ? sanitizeFrameName(
-                                frameDisplayName(effective),
+                                frameDisplayName(effective, catalog.frames),
                               )
                             : "";
                           const link = document.createElement("a");

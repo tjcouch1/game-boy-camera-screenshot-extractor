@@ -228,7 +228,7 @@ function selectionLabel(
     return `Default${defaultLabel ? ` — ${defaultLabel}` : ""}`;
   if (value.kind === "none") return "No frame";
   const f = framesById.get(value.id);
-  return f ? frameDisplayName(f) : value.id;
+  return f ? frameDisplayName(f, frames) : value.id;
 }
 
 export function FramePicker({
@@ -367,30 +367,32 @@ export function FramePicker({
 
       const detected = detectAndLoadFrames(image, stem);
 
-      // Original (USA/JPN) sheets must NOT be deduped across regions here:
+      // Count how many frames will become *newly visible* tiles: those whose
+      // pixels aren't already in the catalog. A USA/JPN-shared frame folds into
+      // an existing tile (just adding its region alias), so it isn't "new" to
+      // the user even though it gets stored under its own region.
+      const newlyVisible = appendDeduped(frames, detected).length - frames.length;
+
+      if (newlyVisible === 0) {
+        toast.info(`No new frames found in ${stem} (all were duplicates).`);
+        return;
+      }
+
+      // Original (USA/JPN) sheets must NOT be deduped across regions in storage:
       // a frame shared between USA and JPN is stored under both stems so the
-      // catalog can mark it shared. addOriginalFrames dedups per-sheet on its
-      // own. Custom pastes, by contrast, dedup against the whole catalog so a
-      // paste identical to an existing frame is dropped.
+      // catalog can fold them together and mark the result shared.
+      // addOriginalFrames dedups per-sheet on its own. Custom pastes, by
+      // contrast, only store the frames that aren't already in the catalog.
       const toAdd =
         storage === "original"
           ? detected
           : appendDeduped(frames, detected).slice(frames.length);
 
-      if (toAdd.length === 0) {
-        toast.info(`No new frames found in ${stem} (all were duplicates).`);
-        return;
-      }
-
       try {
-        const { added } = addMethod(toAdd);
-        if (added === 0) {
-          toast.info(`No new frames found in ${stem} (all were duplicates).`);
-          return;
-        }
-        const skipped = detected.length - added;
+        addMethod(toAdd);
+        const skipped = detected.length - newlyVisible;
         const parts = [
-          `Added ${added} frame${added === 1 ? "" : "s"} from ${stem}.`,
+          `Added ${newlyVisible} frame${newlyVisible === 1 ? "" : "s"} from ${stem}.`,
         ];
         if (skipped > 0) {
           parts.push(`Skipped ${skipped} duplicate${skipped === 1 ? "" : "s"}.`);
@@ -607,7 +609,7 @@ export function FramePicker({
             {normals.map((f) => (
               <FrameTile
                 key={f.id}
-                label={frameDisplayName(f)}
+                label={frameDisplayName(f, frames)}
                 selected={value.kind === "frame" && value.id === f.id}
                 onClick={() => select({ kind: "frame", id: f.id })}
                 palette={palette}
@@ -627,7 +629,7 @@ export function FramePicker({
             {wilds.map((f) => (
               <FrameTile
                 key={f.id}
-                label={frameDisplayName(f)}
+                label={frameDisplayName(f, frames)}
                 selected={value.kind === "frame" && value.id === f.id}
                 onClick={() => select({ kind: "frame", id: f.id })}
                 palette={palette}
@@ -766,7 +768,7 @@ export function FramePicker({
               {customs.map((f) => (
                 <FrameTile
                   key={f.id}
-                  label={frameDisplayName(f)}
+                  label={frameDisplayName(f, frames)}
                   selected={value.kind === "frame" && value.id === f.id}
                   onClick={() => select({ kind: "frame", id: f.id })}
                   palette={palette}
@@ -813,7 +815,7 @@ export function FramePicker({
           <DialogTitle>Delete this frame?</DialogTitle>
           <DialogDescription>
             {pendingDeleteFrame
-              ? `"${frameDisplayName(pendingDeleteFrame)}" will be removed. This can't be undone.`
+              ? `"${frameDisplayName(pendingDeleteFrame, frames)}" will be removed. This can't be undone.`
               : "This can't be undone."}
           </DialogDescription>
         </DialogHeader>

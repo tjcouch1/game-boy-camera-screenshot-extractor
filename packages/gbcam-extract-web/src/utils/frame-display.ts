@@ -21,34 +21,56 @@ function prettifyStem(stem: string): string {
   return spaced.charAt(0).toUpperCase() + spaced.slice(1);
 }
 
+/** Regional sheet stems whose frames participate in USA/JPN tagging. */
+function regionStemsOf(frame: Frame): { inUsa: boolean; inJpn: boolean } {
+  const stems = new Set([frame.sheetStem, ...frame.aliasStems]);
+  return { inUsa: stems.has("Frames_USA"), inJpn: stems.has("Frames_JPN") };
+}
+
 /**
  * Human-readable name for a frame, used in the picker UI and download
  * filenames.
  *
- * Regional (USA/JPN) frames are tagged by which region(s) they belong to,
- * derived purely from the frame's stems — order-independent and not reliant on
- * the rest of the catalog:
- *   - `Frame 3` — shared between USA and JPN (its `aliasStems` cover both)
- *   - `Frame 3 (USA)` — exclusive to the USA sheet
- *   - `Frame 3 (JPN)` — exclusive to the JPN sheet
- *   - `Standard matrix` — individual frame; just the cleaned file stem
+ * A region tag is only shown when the two regions actually render the same
+ * slot *differently* — i.e. a USA-exclusive frame and a JPN-exclusive frame
+ * collide at the same (type, index). Otherwise there's no ambiguity, so no
+ * tag:
+ *   - `Frame 3` — shared between USA and JPN (identical → one entry), OR only
+ *     one region has been uploaded, OR no other-region frame collides here.
+ *   - `Frame 3 (USA)` / `Frame 3 (JPN)` — the two regions have a *different*
+ *     frame at index 3, so both are tagged to tell them apart.
+ *   - `Standard matrix` — individual frame; just the cleaned file stem.
+ *
+ * `allFrames` is the catalog used to detect cross-region collisions; without
+ * it, exclusive frames render untagged.
  */
-export function frameDisplayName(frame: Frame): string {
+export function frameDisplayName(frame: Frame, allFrames?: Frame[]): string {
   if (frame.kind === "individual") return prettifyStem(frame.sheetStem);
   const prefix = frame.type === "wild" ? "Wild Frame" : "Frame";
 
-  const stems = new Set([frame.sheetStem, ...frame.aliasStems]);
-  const inUsa = stems.has("Frames_USA");
-  const inJpn = stems.has("Frames_JPN");
+  const { inUsa, inJpn } = regionStemsOf(frame);
 
-  // Shared between both regions → no tag. Exclusive to one → that region's tag.
+  // Shared across both regions → never ambiguous, no tag.
   if (inUsa && inJpn) return `${prefix} ${frame.index}`;
-  if (inUsa) return `${prefix} ${frame.index} (USA)`;
-  if (inJpn) return `${prefix} ${frame.index} (JPN)`;
 
   // Non-regional sheet (e.g. a multi-frame custom upload): disambiguate by the
   // sheet's own region tag/stem.
-  return `${prefix} ${frame.index} (${regionFromStem(frame.sheetStem)})`;
+  if (!inUsa && !inJpn)
+    return `${prefix} ${frame.index} (${regionFromStem(frame.sheetStem)})`;
+
+  // Exclusive to one region. Only tag if a *different* regional frame collides
+  // at the same (type, index) — that's the only case where USA vs JPN actually
+  // diverge. If only one region is present, nothing collides → no tag.
+  const collides =
+    allFrames?.some((f) => {
+      if (f.id === frame.id) return false;
+      if (f.type !== frame.type || f.index !== frame.index) return false;
+      const other = regionStemsOf(f);
+      return other.inUsa || other.inJpn;
+    }) ?? false;
+
+  if (!collides) return `${prefix} ${frame.index}`;
+  return `${prefix} ${frame.index} (${inUsa ? "USA" : "JPN"})`;
 }
 
 /**

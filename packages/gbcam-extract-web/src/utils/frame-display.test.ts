@@ -20,14 +20,33 @@ function makeFrame(overrides: Partial<Frame> = {}): Frame {
 }
 
 describe("frameDisplayName — regional tagging", () => {
-  it("tags a USA-exclusive frame with (USA)", () => {
-    const f = makeFrame({ sheetStem: "Frames_USA", aliasStems: ["Frames_USA"], index: 3 });
-    expect(frameDisplayName(f)).toBe("Frame 3 (USA)");
+  it("tags both regions when they have a DIFFERENT frame at the same index", () => {
+    const usa = makeFrame({
+      id: "Frames_USA:normal:3",
+      sheetStem: "Frames_USA",
+      aliasStems: ["Frames_USA"],
+      index: 3,
+    });
+    const jpn = makeFrame({
+      id: "Frames_JPN:normal:3",
+      sheetStem: "Frames_JPN",
+      aliasStems: ["Frames_JPN"],
+      index: 3,
+    });
+    const catalog = [usa, jpn];
+    expect(frameDisplayName(usa, catalog)).toBe("Frame 3 (USA)");
+    expect(frameDisplayName(jpn, catalog)).toBe("Frame 3 (JPN)");
   });
 
-  it("tags a JPN-exclusive frame with (JPN)", () => {
-    const f = makeFrame({ sheetStem: "Frames_JPN", aliasStems: ["Frames_JPN"], index: 5 });
-    expect(frameDisplayName(f)).toBe("Frame 5 (JPN)");
+  it("does NOT tag a region-exclusive frame with no other-region collision", () => {
+    // Only the USA sheet is present (or no JPN frame shares this index).
+    const usa = makeFrame({
+      id: "Frames_USA:normal:4",
+      sheetStem: "Frames_USA",
+      aliasStems: ["Frames_USA"],
+      index: 4,
+    });
+    expect(frameDisplayName(usa, [usa])).toBe("Frame 4");
   });
 
   it("gives a shared frame (both regions) no tag, regardless of upload order", () => {
@@ -41,19 +60,47 @@ describe("frameDisplayName — regional tagging", () => {
       aliasStems: ["Frames_JPN", "Frames_USA"],
       index: 7,
     });
-    expect(frameDisplayName(usaWins)).toBe("Frame 7");
-    expect(frameDisplayName(jpnWins)).toBe("Frame 7");
+    expect(frameDisplayName(usaWins, [usaWins])).toBe("Frame 7");
+    expect(frameDisplayName(jpnWins, [jpnWins])).toBe("Frame 7");
   });
 
-  it("uses the 'Wild Frame' prefix for wild frames", () => {
-    const f = makeFrame({
+  it("uses the 'Wild Frame' prefix and tags on a cross-region collision", () => {
+    const usa = makeFrame({
+      id: "Frames_USA:wild:2",
+      type: "wild",
+      sheetStem: "Frames_USA",
+      aliasStems: ["Frames_USA"],
+      index: 2,
+      height: 224,
+    });
+    const jpn = makeFrame({
+      id: "Frames_JPN:wild:2",
       type: "wild",
       sheetStem: "Frames_JPN",
       aliasStems: ["Frames_JPN"],
       index: 2,
       height: 224,
     });
-    expect(frameDisplayName(f)).toBe("Wild Frame 2 (JPN)");
+    expect(frameDisplayName(jpn, [usa, jpn])).toBe("Wild Frame 2 (JPN)");
+  });
+
+  it("does not let a same-index frame of a different TYPE force a tag", () => {
+    const normal = makeFrame({
+      id: "Frames_USA:normal:1",
+      sheetStem: "Frames_USA",
+      aliasStems: ["Frames_USA"],
+      index: 1,
+    });
+    const wild = makeFrame({
+      id: "Frames_JPN:wild:1",
+      type: "wild",
+      sheetStem: "Frames_JPN",
+      aliasStems: ["Frames_JPN"],
+      index: 1,
+      height: 224,
+    });
+    // Different types never collide, so neither is tagged.
+    expect(frameDisplayName(normal, [normal, wild])).toBe("Frame 1");
   });
 
   it("uses the cleaned stem for individual frames", () => {
