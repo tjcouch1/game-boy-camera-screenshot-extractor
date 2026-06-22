@@ -54,6 +54,14 @@ The TypeScript port of the pipeline. This is what we develop going forward.
 - Python scripts in `packages/gbcam-extract-py/` are **historical reference only** — when improving algorithms, always work on the TypeScript package.
 - The test suite compares TypeScript output against reference images to track accuracy.
 - Do NOT import `@techstark/opencv-js` directly — always use `initOpenCV()` from `init-opencv.ts`.
+- **The pipeline (`packages/gbcam-extract/src/`) runs in the browser**, not just
+  Node. It's fine to temporarily gate experimental tuning behind environment
+  variables (e.g. `const X = process.env.TUNE_X ? Number(process.env.TUNE_X) : 5;`)
+  while A/B-comparing pipeline options from Node — that's handy when running
+  tests. But `process` is undefined in the browser, so any `process.env`
+  (or other Node-only) access throws there. Before considering browser-bound
+  pipeline work done, **remove the env-var reads** and inline the chosen default.
+  Grep `packages/gbcam-extract/src` for `process.` / `import.meta.env` first.
 
 ## How to Run
 
