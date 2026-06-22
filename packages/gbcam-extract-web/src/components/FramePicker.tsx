@@ -103,6 +103,13 @@ function buildEmptyImage(): GBImageData {
 const EMPTY_IMAGE = buildEmptyImage();
 const EMPTY_USER_IDS: Set<string> = new Set();
 
+/**
+ * Manual-acquisition ("Add Original Frames") sections default to expanded so
+ * the upload guidance is visible without an extra click. Derived from the
+ * sheet ids so it stays correct if the acquisition manifest changes.
+ */
+const DEFAULT_OPEN_MANUAL_SECTIONS: string[] = MANUAL_SHEETS.map((s) => s.id);
+
 /** Render a frame (or solid lightest color when no frame) onto a canvas. */
 function FrameCanvas({
   frame,
@@ -343,7 +350,7 @@ export function FramePicker({
 
   const [activeAccordions, setActiveAccordions] = useLocalStorage<string[]>(
     "gbcam-frame-picker-accordions",
-    ["usa", "jpn"],
+    DEFAULT_OPEN_MANUAL_SECTIONS,
   );
 
   const [openedIds, setOpenedIds] = useState<Set<string>>(new Set());
