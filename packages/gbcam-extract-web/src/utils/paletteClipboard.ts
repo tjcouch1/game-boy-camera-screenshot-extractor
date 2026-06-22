@@ -73,11 +73,17 @@ export async function isPaletteInClipboard(): Promise<boolean> {
       return deserializePaletteFromClipboard(text) !== null;
     } catch (err) {
       // NotAllowedError means permission denied, which is expected on some mobile browsers
-      // Other errors might be connectivity-related - return false for all cases
+      // Throw it so the hook can stop polling.
+      if (err instanceof Error && err.name === "NotAllowedError") {
+        throw err;
+      }
       return false;
     }
-  } catch {
+  } catch (err) {
     // Clipboard API not available
+    if (err instanceof Error && err.name === "NotAllowedError") {
+      throw err;
+    }
     return false;
   }
 }

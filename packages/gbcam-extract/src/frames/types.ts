@@ -1,0 +1,41 @@
+/**
+ * A single Game Boy Camera frame extracted from a sheet PNG.
+ *
+ * Pixel values are pre-snapped to the four GB grayscale values
+ * {0, 82, 165, 255}. Hole pixels (the 128 × 112 region where the camera
+ * image goes) are stored as 255 so frames render with the lightest
+ * palette colour when shown alone in the picker.
+ */
+export interface Frame {
+  /** Stable identifier of the form "<sheetStem>:<type>:<index>". */
+  id: string;
+  /** Stem of the source sheet (e.g. "Frames_USA"). */
+  sheetStem: string;
+  /**
+   * Sheet stems that contained an identical frame. Always includes
+   * `sheetStem`. After {@link dedupeFrames}, contains every stem whose copy
+   * was merged into this winner — so a caller can decide whether to display
+   * the source region (one stem) or treat the frame as cross-sheet (more
+   * than one).
+   */
+  aliasStems: string[];
+  /** "normal" if dimensions are exactly 160 × 144, else "wild". */
+  type: "normal" | "wild";
+  /**
+   * "sheet" — produced by {@link splitSheet} from a multi-frame sheet PNG.
+   * "individual" — produced by {@link loadIndividualFrame} from a single PNG
+   * whose entire body is the frame. Used by the UI to format the display
+   * name (sheet frames use a "Frame N (region)" label, individual frames use
+   * the cleaned file stem directly).
+   */
+  kind: "sheet" | "individual";
+  /** 1-based index, scoped to (sheetStem, type), in (y, x) reading order. */
+  index: number;
+  width: number;
+  height: number;
+  /** length = width × height. Each value is in {0, 82, 165, 255}. */
+  pixels: Uint8ClampedArray;
+  /** Top-left of the 128 × 112 hole, in frame-local coords. */
+  holeX: number;
+  holeY: number;
+}

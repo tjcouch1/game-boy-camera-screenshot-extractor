@@ -79,8 +79,12 @@ export function sample(
       const bHi = innerStart + Math.floor(innerW / 3);
       const gLo = innerStart + Math.floor(innerW / 3);
       const gHi = innerStart + 2 * Math.floor(innerW / 3);
-      const rLo = innerStart + 2 * Math.floor(innerW / 3);
-      const rHi = innerEnd;
+      // R sub-pixel center at scale=8 is at col 6.67. Sample [5,7) was
+      // centered at col 5.5 — 1.17 cols left of the actual peak. Now that
+      // sub-pixel rectification reliably places the LCD R sub-pixel at the
+      // same column across the image, we can shift R sampling 1 col right.
+      const rLo = innerStart + 2 * Math.floor(innerW / 3) + (scale >= 8 ? 1 : 0);
+      const rHi = Math.min(scale, innerEnd + 1);
 
       let rSum = 0,
         gSum = 0,
@@ -112,6 +116,79 @@ export function sample(
     }
   }
 
+  // ── Directed vertical R de-bleed ──
+  //
+  // The GBA-SP front-light bleeds brighter pixels into dimmer ones,
+  // "especially vertically" (see input-image notes). In a dithered LG/DG
+  // region a DG pixel (#9494FF, low R) sandwiched between brighter warm
+  // rows has its sampled R lifted toward those neighbours, pushing it
+  // across the DG→LG decision boundary — by far the dominant tier-1 error
+  // (out=LG, truth=DG). This pass removes that bled-in light so the dithered
+  // contrast is restored before classification.
+  //
+  // Three constraints keep it from trading errors elsewhere (each verified
+  // to matter on the test corpora):
+  //   1. Directed (local-minimum only): correct a channel only where the
+  //      pixel is dimmer than BOTH vertical neighbours — a genuine bleed
+  //      victim. Local maxima (e.g. a DG pixel between two BK rows) are left
+  //      alone, so flat/dark regions are preserved. Without this an
+  //      undirected unsharp catastrophically lifts DG-between-BK into LG.
+  //   2. B-gate: only correct pixels that are *bluer* than their vertical
+  //      neighbours. DG carries high B; LG/WH carry low B, so a bleed-lifted
+  //      DG pixel stays a vertical B-maximum while a genuinely-dim warm
+  //      feature (sharp DG/LG detail) does not. This is what lets bathhouse
+  //      and park improve while prison's sharp features stay protected.
+  //   3. Magnitude floor: ignore sub-`MARGIN` neighbour gaps so flat-region
+  //      sampling noise is never amplified.
+  //
+  // Strengths are physical-bleed parameters calibrated on the reference
+  // corpus. (These were `process.env`-overridable while tuning in Node, but
+  // the pipeline also runs in the browser where `process` is undefined, so the
+  // calibrated defaults are inlined.)
+  const debleedR = 0.25;
+  const debleedG = 0;
+  const debleedMargin = 0;
+  const debleedBGate = 10;
+  if (debleedR > 0 || debleedG > 0) {
+    const src = output.data.slice();
+    for (let by = 1; by < CAM_H - 1; by++) {
+      for (let bx = 0; bx < CAM_W; bx++) {
+        const o = (by * CAM_W + bx) * 4;
+        const up = ((by - 1) * CAM_W + bx) * 4;
+        const dn = ((by + 1) * CAM_W + bx) * 4;
+        // B-gate: only de-bleed pixels that are bluer than their vertical
+        // neighbours. DG (#9494FF) carries high B; LG/WH carry low B. A
+        // genuine bleed victim — a DG pixel whose R was lifted by brighter
+        // (warm, low-B) neighbours above/below — stays a vertical B-maximum.
+        // A truly-dim warm pixel (e.g. a sharp DG/LG feature in prison) is
+        // NOT bluer than its neighbours, so it is left untouched. This is
+        // what separates "restore dithered DG contrast" (bathhouse/park,
+        // helped) from "corrupt a sharp warm feature" (prison, protected).
+        const bv = src[o + 2];
+        const bIsDgLike = debleedBGate <= 0 || bv > (src[up + 2] + src[dn + 2]) / 2 + debleedBGate;
+        if (bIsDgLike) {
+          for (const [ch, a] of [[0, debleedR], [1, debleedG]] as const) {
+            if (a <= 0) continue;
+            const v = src[o + ch];
+            const u = src[up + ch];
+            const d = src[dn + ch];
+            // Directed de-bleed: only correct vertical local minima — a pixel
+            // dimmer than BOTH neighbours is a genuine bleed victim receiving
+            // light from the brighter rows above and below. Subtract that
+            // bled-in light, pushing it back toward its true (darker) value.
+            if (v < u && v < d) {
+              const neigh = (u + d) / 2;
+              const gap = neigh - v;
+              if (gap >= debleedMargin) {
+                output.data[o + ch] = Math.max(0, Math.min(255, Math.round(v - a * gap)));
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
   if (dbg) {
     // Compute per-channel min/max
     let rMin = 255, rMax = 0, gMin = 255, gMax = 0, bMin = 255, bMax = 0;
@@ -134,8 +211,8 @@ export function sample(
     const bHiLog = innerStartLog + Math.floor(innerWLog / 3);
     const gLoLog = bHiLog;
     const gHiLog = innerStartLog + 2 * Math.floor(innerWLog / 3);
-    const rLoLog = gHiLog;
-    const rHiLog = innerEndLog;
+    const rLoLog = gHiLog + (scale >= 8 ? 1 : 0);
+    const rHiLog = scale;
     dbg.log(
       `[sample] subpixel cols (scale=${scale}): ` +
         `B=[${bLoLog},${bHiLog}) G=[${gLoLog},${gHiLog}) R=[${rLoLog},${rHiLog}) vMargin=${vMargin}`,

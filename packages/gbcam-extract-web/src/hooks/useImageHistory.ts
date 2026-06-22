@@ -6,12 +6,8 @@ import {
   isSerializedPipelineResult,
 } from "../utils/serialization.js";
 import { useLocalStorage } from "./useLocalStorage.js";
-
-export interface ProcessingResult {
-  result: PipelineResult;
-  filename: string;
-  processingTime: number;
-}
+import type { ProcessingResult } from "./useProcessing.js";
+import type { FrameSelection } from "../types/frame-selection.js";
 
 export interface ImageHistoryBatch {
   id: string;
@@ -206,6 +202,42 @@ export function useImageHistory() {
     });
   }, [settings]);
 
+  const updateFrameOverride = useCallback(
+    (batchId: string, resultIndex: number, override: FrameSelection) => {
+      setHistory((prev) =>
+        prev.map((batch) =>
+          batch.id === batchId
+            ? {
+                ...batch,
+                results: batch.results.map((r, i) =>
+                  i === resultIndex ? { ...r, frameOverride: override } : r,
+                ),
+              }
+            : batch,
+        ),
+      );
+    },
+    [],
+  );
+
+  /**
+   * Reset any history result whose frameOverride points to `frameId` back to
+   * `{kind: "default"}` so it follows the global default. Called when a user
+   * frame is deleted so stale references don't render as "unknown frame".
+   */
+  const purgeFrameOverride = useCallback((frameId: string) => {
+    setHistory((prev) =>
+      prev.map((batch) => ({
+        ...batch,
+        results: batch.results.map((r) =>
+          r.frameOverride?.kind === "frame" && r.frameOverride.id === frameId
+            ? { ...r, frameOverride: { kind: "default" } }
+            : r,
+        ),
+      })),
+    );
+  }, []);
+
   return {
     history,
     settings,
@@ -217,5 +249,7 @@ export function useImageHistory() {
     deleteAllHistory,
     updateSettings,
     pruneHistory,
+    updateFrameOverride,
+    purgeFrameOverride,
   };
 }

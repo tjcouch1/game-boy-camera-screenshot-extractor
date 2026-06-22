@@ -10,6 +10,7 @@ import { existsSync, mkdirSync, readdirSync, unlinkSync } from "fs";
 import sharp from "sharp";
 import { initOpenCV } from "../src/init-opencv.js";
 import { processPicture } from "../src/index.js";
+import { locate } from "../src/locate.js";
 import { warp } from "../src/warp.js";
 import { correct } from "../src/correct.js";
 import { crop } from "../src/crop.js";
@@ -35,17 +36,24 @@ OPTIONS
   -o, --output-dir DIR
                     Output directory (created if needed). Default: same as input.
   --scale N         Working scale (default: 8)
-  --start STEP      Start pipeline at this step (warp/correct/crop/sample/quantize)
+  --start STEP      Start pipeline at this step
+                    (locate/warp/correct/crop/sample/quantize)
   --end STEP        End pipeline at this step
   --clean-steps     Delete intermediate files after pipeline completes
   --debug           Save intermediate step images
   --help            Show this help message
 
-STEPS (in order): warp -> correct -> crop -> sample -> quantize
+STEPS (in order): locate -> warp -> correct -> crop -> sample -> quantize
+
+  locate    Find the Game Boy Screen within a full phone photo and produce
+            an upright crop with margin (input to warp). Already-cropped
+            photos pass through cleanly. Skip with --start warp.
 
 EXAMPLES
-  pnpm extract -- --dir ../../sample-pictures -o ../../sample-pictures-out
-  pnpm extract -- photo1.jpg photo2.jpg -o ./out
+  pnpm extract -- --dir ../../sample-pictures-full -o ../../sample-pictures-out
+  pnpm extract -- photo.jpg -o ./out
+  pnpm extract -- --start warp --dir ../../test-input -o ../../test-output
+  pnpm extract -- --start warp photo_already_cropped.jpg -o ./out
   pnpm extract -- --start quantize --dir ./out -o ./out
   pnpm extract -- --dir ./photos -o ./out --debug --clean-steps
 `);
@@ -62,6 +70,7 @@ function stripStepSuffix(stem: string): string {
 }
 
 const STEP_SUFFIX: Record<string, string> = {
+  locate: "_locate",
   warp: "_warp",
   correct: "_correct",
   crop: "_crop",
@@ -70,6 +79,7 @@ const STEP_SUFFIX: Record<string, string> = {
 };
 
 const STEP_INPUT_SUFFIX: Record<string, string> = {
+  warp: "_locate",
   correct: "_warp",
   crop: "_correct",
   sample: "_crop",
@@ -108,7 +118,7 @@ function collectInputFiles(positionalArgs: string[], dir?: string): string[] {
 }
 
 function collectForStart(positionalArgs: string[], dir: string | undefined, startStep: string): string[] {
-  if (startStep === "warp") {
+  if (startStep === "locate" || startStep === "warp") {
     return collectInputFiles(positionalArgs, dir);
   }
 
@@ -139,8 +149,10 @@ function collectForStart(positionalArgs: string[], dir: string | undefined, star
 }
 
 async function loadImage(filePath: string): Promise<GBImageData> {
-  const img = sharp(filePath).removeAlpha().ensureAlpha();
-  const { width, height } = await sharp(filePath).metadata() as { width: number; height: number };
+  // Auto-orient: applies any EXIF rotation so loaded pixels match visual
+  // orientation. Phone photos may store landscape images with EXIF rotation.
+  const img = sharp(filePath).rotate().removeAlpha().ensureAlpha();
+  const { width, height } = await sharp(filePath).rotate().metadata() as { width: number; height: number };
   const { data, info } = await img
     .raw()
     .toBuffer({ resolveWithObject: true });
@@ -172,6 +184,7 @@ async function saveImage(img: GBImageData, outPath: string): Promise<void> {
 // ─── Step runners ───
 
 const STEP_FUNCTIONS: Record<string, (input: GBImageData, scale: number) => GBImageData> = {
+  locate: (input, _scale) => locate(input),
   warp: (input, scale) => warp(input, { scale }),
   correct: (input, scale) => correct(input, { scale }),
   crop: (input, scale) => crop(input, { scale }),
@@ -197,7 +210,7 @@ function parseArgs(argv: string[]): CLIArgs {
   const args: CLIArgs = {
     inputs: [],
     scale: 8,
-    start: "warp",
+    start: "locate",
     end: "quantize",
     cleanSteps: false,
     debug: false,
@@ -234,6 +247,9 @@ function parseArgs(argv: string[]): CLIArgs {
         break;
       case "--debug":
         args.debug = true;
+        break;
+      case "--":
+        // Some pnpm versions forward the argument separator literally; ignore it.
         break;
       default:
         if (!arg.startsWith("-")) {

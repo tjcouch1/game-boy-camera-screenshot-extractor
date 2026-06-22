@@ -223,11 +223,31 @@ test-output/**/*
 !test-output/**/*_gbcam.png
 !test-output/**/*_gbcam_rgb.png
 
+test-output-full/**/*
+!test-output-full/*/
+!test-output-full/**/*.log
+!test-output-full/**/*_gbcam.png
+!test-output-full/**/*_gbcam_rgb.png
+
+test-output-private
+
+sample-pictures-out-full/**/*
+!sample-pictures-out-full/*/
+!sample-pictures-out-full/**/*.log
+!sample-pictures-out-full/**/*_gbcam.png
+!sample-pictures-out-full/**/*_gbcam_rgb.png
+
+sample-pictures-out-private
+
 test-output-py/**/*
 !test-output-py/*/
 !test-output-py/**/*.log
 !test-output-py/**/*_gbcam.png
 !test-output-py/**/*_gbcam_rgb.png
+
+# Private test inputs
+sample-pictures-private/
+test-input-private/
 
 # Node
 node_modules/
@@ -256,3 +276,11 @@ packages/gbcam-extract-web/public/instructions-assets
 # Generated skills - npx skills add shadcn/ui
 skills-lock.json
 .claude/skills/shadcn
+
+# Frame sheets copied into web/public and the generated manifest
+packages/gbcam-extract-web/public/frames
+packages/gbcam-extract-web/src/generated/FrameSheets.ts
+
+# Sample pictures copied into web/public and the generated manifest
+packages/gbcam-extract-web/public/sample-pictures
+packages/gbcam-extract-web/src/generated/SamplePictures.ts

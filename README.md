@@ -103,9 +103,22 @@ pnpm build
 
 ## To run TypeScript tests
 
+To run unit tests on TypeScript code:
+
 ```bash
 pnpm test
+```
+
+To run tests to check the pipeline's accuracy against `-output-corrected.png` files in `test-input` (and optionally `test-input-private` if it exists):
+
+```bash
 pnpm test:pipeline
+```
+
+To run tests as mentioned above and to run the `sample-pictures` and `sample-pictures-full` through the pipeline as well (and optionally `sample-pictures-private` if it exists):
+
+```bash
+pnpm test:pipeline:all
 ```
 
 ## To run the extraction pipeline locally in Node
@@ -150,7 +163,9 @@ Create a PR merging `main` into `production` branch. Once this is merged, `deplo
 
 1. Publish the website to GitHub Pages
 2. Create a release in GitHub
-3. Bump the minor versions in the `package.json` files
+3. Create a PR to bump the minor versions in the `package.json` files
+
+You need to merge that PR immediately so that the last commit that has the old version is the one with the code in that release.
 
 # Python development instructions
 
@@ -244,18 +259,9 @@ python test_pipeline.py --input "../../test-input/zelda-poster-1.jpg" --referenc
 # Known issues
 
 - Conversion does not preserve the image with 100% accuracy
-- Output image is different on mobile vs on desktop using the same input image (means test results do not reflect accuracy on mobile)
-- Unique palette name issues
-  - If you click "+ Custom" twice on the same selection to add two custom palettes that are in editing mode, they receive different names (different number at the end). But when you try to save one, the other displays "A palette with this name already exists"
-  - Pasting the same new palette multiple times uses the same palette name incremented from the previous palette name
-- The progress bar does not display progress correctly.
 - Debug mode in the website is completely untested
 
 # Roadmap
 
-- Add instructions to the website
 - Accuracy improvements
-- Figure out output difference between mobile and desktop
 - Initial crop from phone picture to cropped and rotated image that is input to "warp" step
-- Add color palette selection (pipeline - already implemented in website)
-- Shadcn/ui

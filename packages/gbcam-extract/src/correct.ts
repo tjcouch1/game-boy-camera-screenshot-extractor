@@ -39,6 +39,8 @@ import {
   hstack,
   renderHeatmap,
 } from "./debug.js";
+import { FRAME_MASK, FRAME_MASK_W, FRAME_MASK_H } from "./frame-mask.js";
+import { fitBivariateSurface } from "./poly-surface.js";
 
 // ─── Constants ───
 
@@ -129,9 +131,11 @@ export function correct(
   let darkSurfaceG = buildDarkSurface(leftG, rightG, topG, botG, H, W, scale, darkSmooth);
   let correctedG = applyCorrectionChannel(chG, whiteSurfaceG, darkSurfaceG, W, H, 255, 148);
 
-  // B channel: white=dark (no correction, both are close to ~200)
-  // For simplicity, keep B as-is or apply light correction
-  let correctedB = new Float32Array(chB);
+  // B channel: kept raw (downstream B reclassify uses empirical means
+  // computed from current labels). Earlier 3-anchor piecewise-linear
+  // attempts collapsed the camera-area B discriminator at saturation; the
+  // raw range gives the existing reclassify what it expects.
+  const correctedB = new Float32Array(chB);
 
   if (dbg) {
     dbg.log(
@@ -353,6 +357,101 @@ function cameraRegionMean(img: GBImageData, scale: number): [number, number, num
     }
   }
   return n > 0 ? [sR / n, sG / n, sB / n] : [0, 0, 0];
+}
+
+// ─── Frame-mask per-colour sample collection ───
+
+/**
+ * Sample one channel of the warped image at every frame-mask position of
+ * the requested colour. Returns scattered (ys, xs, vs) suitable for
+ * fitBivariateSurface. Sampling uses the inner block (excluding 1-pixel
+ * borders) at GB-pixel resolution.
+ */
+function collectFrameColorSamples(
+  channel: Float32Array,
+  scale: number,
+  color: number,
+): { ys: number[]; xs: number[]; vs: number[] } {
+  const ys: number[] = [];
+  const xs: number[] = [];
+  const vs: number[] = [];
+  const half = Math.floor(scale / 2);
+  const margin = Math.max(1, Math.floor(scale / 4));
+  const W = SCREEN_W * scale;
+  for (let fy = 0; fy < FRAME_MASK_H; fy++) {
+    for (let fx = 0; fx < FRAME_MASK_W; fx++) {
+      if (FRAME_MASK[fy * FRAME_MASK_W + fx] !== color) continue;
+      // Average over the inner block (avoid border bleed)
+      const y1 = fy * scale + margin;
+      const y2 = (fy + 1) * scale - margin;
+      const x1 = fx * scale + margin;
+      const x2 = (fx + 1) * scale - margin;
+      let sum = 0;
+      let count = 0;
+      for (let y = y1; y < y2; y++) {
+        const rowBase = y * W;
+        for (let x = x1; x < x2; x++) {
+          sum += channel[rowBase + x];
+          count++;
+        }
+      }
+      if (count > 0) {
+        ys.push(fy * scale + half);
+        xs.push(fx * scale + half);
+        vs.push(sum / count);
+      }
+    }
+  }
+  return { ys, xs, vs };
+}
+
+/**
+ * Piecewise-linear B-channel correction with 3 anchors per location.
+ *
+ *   obs ≤ bkB        →  0
+ *   bkB < obs ≤ whB  →  linear interp 0 → 165
+ *   whB < obs ≤ dgB  →  linear interp 165 → 220  (DG target lowered from
+ *                                                  255 to leave headroom)
+ *   obs > dgB        →  linear extrap from 220 with same slope (no clamp)
+ *
+ * The DG target is 220 rather than the palette 255 to leave 35 units of
+ * headroom for camera-area DG pixels — their observed B sits above the
+ * polynomial's DG-anchor surface estimate (the frame anchors live on 1-px
+ * dash edges with PSF bleed; camera-area DG has less bleed and higher B).
+ * Without headroom, camera DG saturates to 255 alongside any PSF-bleed
+ * warm pixel, destroying the B discriminator.
+ */
+function applyThreeAnchorB(
+  channel: Float32Array,
+  bkSurface: Float32Array,
+  whSurface: Float32Array,
+  dgSurface: Float32Array,
+  W: number,
+  H: number,
+): Float32Array {
+  const out = new Float32Array(H * W);
+  for (let i = 0; i < H * W; i++) {
+    const v = channel[i];
+    const bk = bkSurface[i];
+    const wh = whSurface[i];
+    const dg = dgSurface[i];
+    let mapped: number;
+    if (wh - bk < 5 || dg - wh < 5) {
+      mapped = v;
+    } else if (v <= bk) {
+      const slope = 165 / (wh - bk);
+      mapped = 0 - slope * (bk - v);
+    } else if (v <= wh) {
+      mapped = ((v - bk) / (wh - bk)) * 165;
+    } else if (v <= dg) {
+      mapped = 165 + ((v - wh) / (dg - wh)) * (220 - 165);
+    } else {
+      const slope = (220 - 165) / (dg - wh);
+      mapped = 220 + (v - dg) * slope;
+    }
+    out[i] = Math.max(0, Math.min(255, mapped));
+  }
+  return out;
 }
 
 // ─── Helper: GB block sample ───

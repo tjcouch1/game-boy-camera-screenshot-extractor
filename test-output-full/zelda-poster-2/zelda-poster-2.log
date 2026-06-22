@@ -1,0 +1,79 @@
+PIPELINE RUN
+  Input:      test-input-full\zelda-poster-2.jpg
+  Output dir: test-output-full\zelda-poster-2
+
+PIPELINE DIAGNOSTICS
+  [locate] working-res 1000×450 (scale=0.248 from 4032×1816)
+  [locate] found 4 candidate(s); top score=0.004
+  [locate] chose candidate 0: totalScore=0.990 (innerBorder=0.933, darkRing=1.000)
+  [locate] dash search: top@row=7 (expected 7, off 0), bottom@row=137 (expected 136, off 1), left@col=1 (expected 3, off 2), right@col=157 (expected 156, off 1)
+  [locate] output region: 1291×1150 (margin=6.0%, passThrough=false)
+  [warp] corner detection: area=1195209 aspect=1.177 (target 1.111) thresh=180 score=0.0164
+  [warp] detected source corners (TL TR BR BL): (73,57) (1220,53) (1219,1092) (74,1092)
+  [warp] pass 1 edge offsets (avg): top=-1.87 bot=0.40 left=-0.94 right=4.10
+  [warp] pass 1 corner errors: TL=(-2.7,-0.8) TR=(1.7,-1.2) BR=(2.7,0.5) BL=(-1.5,0.1)
+  [warp] pass 1 poly fit RMSE: top=0.24 bot=0.31 left=0.61 right=0.23
+  [warp] pass 1 sub-pixel gap width: left=11.98 right=11.07 top=10.18 bottom=9.35
+  [warp] pass 2 edge offsets (avg): top=-0.88 bot=0.05 left=1.09 right=1.87
+  [warp] pass 2 corner errors: TL=(-1.3,-0.3) TR=(0.7,-0.6) BR=(1.2,0.1) BL=(-0.6,-0.1)
+  [warp] pass 2 poly fit RMSE: top=0.23 bot=0.30 left=0.58 right=0.22
+  [warp] pass 2 sub-pixel gap width: left=12.21 right=11.20 top=10.13 bottom=9.66
+  [warp] non-linear pre-remap residuals: top=-0.42 bot=0.04 left=0.63 right=0.89
+  [warp] non-linear fit RMSE: top=0.22 bot=0.29 left=0.58 right=0.22
+  [warp] non-linear shift magnitudes (max |Δ|): top=0.49 bot=0.12 left=0.90 right=1.28
+  [warp] sub-pixel rectify: max shift=2.09 px top G-offset range [1.76, 4.63] bot G-offset range [2.28, 4.41]
+  [warp] final residuals (post-remap, signed mean): top=-0.007 bot=0.018 left=1.353 right=0.128
+  [correct] R: white samples kept=7466 (median 243.0, range 181–255)
+  [correct] G: white samples kept=7499 (median 225.6, range 168–254)
+  [correct] white surface R: 212–259; G: 191–250
+  [correct] dark surface  R: 148–180; G: 152–175
+  [correct] interior DG calibration: R=3416px G=4735px
+  [correct] frame post-correction p85: R=255 G=255 B=211 (target #FFFFA5 = R255 G255 B165)
+  [correct] camera region mean: R=177.3 G=152.1 B=203.9
+  [crop] inner-border mean=173.3 white-frame mean=196.5 (ratio 0.882, WARN)
+  [sample] R: 19–254  G: 0–255  B: 91–255
+  [sample] subpixel cols (scale=8): B=[1,3) G=[3,5) R=[6,8) vMargin=1
+  [quantize] global k-means cluster centers (palette-ordered):  BK=(R69,G29)  DG=(R128,G152)  LG=(R219,G167)  WH=(R214,G248)
+  [quantize] after global kmeans: BK=1572  DG=3525  LG=4254  WH=4985
+  [quantize] strip ensemble: 7 strips, changed 1 px  now: BK=1572  DG=3526  LG=4253  WH=4985
+  [quantize] G-valley refinement: threshold=212.0 (LG center G=166.9, WH center G=248.4), changed 3 px
+  [quantize] B reclassify: dgMeanB=231.6 warmMeanB=181.0 flipDg->warm=0 flipWarm->dg=0
+  [quantize] confidence refine pass 1: 14221/14336 pixels confident, 1 ambiguous pixels reclassified via similar-RGB neighbour vote
+  [quantize] confidence refine pass 2: 14221/14336 pixels confident, 0 ambiguous pixels reclassified via similar-RGB neighbour vote
+  [quantize] final: BK=1572 (11.0%)  DG=3526 (24.6%)  LG=4255 (29.7%)  WH=4983 (34.8%)
+
+======================================================================
+COMPARISON SUMMARY
+======================================================================
+  Total pixels : 14336
+  Matching     : 14336  (100.00%)
+  Different    : 0   (0.00%)
+
+----------------------------------------------------------------------
+COLOR DISTRIBUTION
+----------------------------------------------------------------------
+  Color                     Result   Reference      Diff
+  BK  #000000                 1572        1572  +0
+  DG  #9494FF                 3526        3526  +0
+  LG  #FF9494                 4255        4255  +0
+  WH  #FFFFA5                 4983        4983  +0
+
+----------------------------------------------------------------------
+CONFUSION MATRIX  (rows = pipeline result, cols = reference)
+----------------------------------------------------------------------
+  Result / Ref             BK  #000000       DG  #9494FF       LG  #FF9494       WH  #FFFFA5   TOTAL
+  BK  #000000                    1572 v                0                  0                  0      1572
+  DG  #9494FF                       0               3526 v                0                  0      3526
+  LG  #FF9494                       0                  0               4255 v                0      4255
+  WH  #FFFFA5                       0                  0                  0               4983 v    4983
+
+======================================================================
+COMPARISON SUMMARY (reprint)
+======================================================================
+  Total pixels : 14336
+  Matching     : 14336  (100.00%)
+  Different    : 0   (0.00%)
+
+======================================================================
+RESULT: PASS — all pixels match the reference.
+======================================================================

@@ -12,7 +12,8 @@ packages/
   gbcam-extract/       TypeScript pipeline (active development)
   gbcam-extract-web/   React PWA frontend
 supporting-materials/  Reference frame images, ASCII art, etc.
-sample-pictures/       Sample input photos for extraction
+sample-pictures/       Sample input photos for extraction (already-cropped)
+sample-pictures-full/  Full original phone photos (un-cropped) — locate test inputs
 test-input/            Test images with reference outputs
 test-output/           Pipeline test results and diagnostics
 ```
@@ -53,6 +54,14 @@ The TypeScript port of the pipeline. This is what we develop going forward.
 - Python scripts in `packages/gbcam-extract-py/` are **historical reference only** — when improving algorithms, always work on the TypeScript package.
 - The test suite compares TypeScript output against reference images to track accuracy.
 - Do NOT import `@techstark/opencv-js` directly — always use `initOpenCV()` from `init-opencv.ts`.
+- **The pipeline (`packages/gbcam-extract/src/`) runs in the browser**, not just
+  Node. It's fine to temporarily gate experimental tuning behind environment
+  variables (e.g. `const X = process.env.TUNE_X ? Number(process.env.TUNE_X) : 5;`)
+  while A/B-comparing pipeline options from Node — that's handy when running
+  tests. But `process` is undefined in the browser, so any `process.env`
+  (or other Node-only) access throws there. Before considering browser-bound
+  pipeline work done, **remove the env-var reads** and inline the chosen default.
+  Grep `packages/gbcam-extract/src` for `process.` / `import.meta.env` first.
 
 ## How to Run
 
@@ -99,10 +108,14 @@ TypeScript unit tests (vitest):
 cd packages/gbcam-extract && pnpm test
 ```
 
-TypeScript pipeline tests (accuracy comparison against reference images):
+TypeScript pipeline tests (accuracy comparison against reference images). Two modes; both work from the repo root or from the package:
 
 ```bash
-cd packages/gbcam-extract && pnpm test:pipeline
+# Quick (default): sample-pictures extraction smoke test + test-input-full (locate:true) primary accuracy run
+pnpm test:pipeline
+
+# Full: all six corpora (tier-1 reference comparisons + tier-2 self-consistency runs)
+pnpm test:pipeline:all
 ```
 
 Python test runner outputs to `test-output-py/`, TypeScript to `test-output/`. Both produce a `test-summary.log`. You can compare them side by side.
@@ -144,11 +157,23 @@ pnpm interleave -- --image thing-2 --py warp,correct,crop,sample --ts quantize
 
 ### Inspecting test results
 
-- `test-output/<test-name>/` (TypeScript) or `test-output-py/<test-name>/` (Python) contains the final outputs and reference-comparison diagnostics
-- `test-output/test-summary.log` / `test-output-py/test-summary.log` has accuracy numbers (matching/different pixel counts and percentages)
-- `test-output/<test-name>/<test-name>.log` is the per-image log: pipeline diagnostics, comparison summary, color distribution, confusion matrix, error breakdown
-- `test-output/<test-name>/<test-name>_diag_*.png` are reference-comparison images (error map, side-by-side, etc.)
-- `test-output/<test-name>/debug/` holds everything emitted by the pipeline itself when `debug: true` (see next section)
+The pipeline test runner produces six output directories, organized into two tiers:
+
+- **Tier 1 (reference comparison, hard gates):**
+  - `test-output/<test-name>/` (`locate:false`, already-cropped inputs from `test-input/`) — baseline accuracy.
+  - `test-output-full/<test-name>/` (`locate:true`, full phone photos from `test-input-full/`) — primary `locate` accuracy check.
+  - `test-output-locate/<test-name>/` (`locate:true`, already-cropped inputs from `test-input/`) — robustness check that `locate` is a near-no-op on already-cropped inputs.
+- **Tier 2 (sample-pictures self-consistency, soft signals):**
+  - `sample-pictures-out/` (`locate:false`) — produced first; serves as the de-facto reference for the next two.
+  - `sample-pictures-out-locate/<test-name>/` (`locate:true` on already-cropped sample-pictures).
+  - `sample-pictures-out-full/<test-name>/` (`locate:true` on full sample-pictures-full photos).
+
+Each output directory has its own `test-summary.log` with accuracy numbers (matching/different pixel counts). Per-image artifacts under `<output-dir>/<test-name>/`:
+
+- Final outputs at the top level: `<test-name>_gbcam.png`, `<test-name>_gbcam_rgb.png`, `<test-name>.log`.
+- Everything else lives in `<test-name>/debug/`: pipeline-step intermediates (`<test-name>_warp.png`, etc.), per-step debug images (`<test-name>_warp_a_corners.png`, etc.), reference-comparison diagnostics (`<test-name>_diag_error_map.png`, `<test-name>_diag_result.png`, `<test-name>_diag_reference.png`), and the structured `<test-name>_debug.json`.
+
+The Python pipeline still writes to `test-output-py/`.
 
 ### Pipeline debug output (`debug/` folder)
 
@@ -157,6 +182,13 @@ When the TS pipeline runs with `debug: true` (always on for `pnpm test:pipeline`
 #### Debug images per step
 
 All filenames are prefixed with the input stem (e.g. `thing-1_`).
+
+**locate**
+- `<stem>_locate.png` — final cropped/rotated image (variable size, axis-aligned, GB Screen + proportional margin). Regular pipeline intermediate.
+- `<stem>_locate_a_thresholded.png` — working-resolution downsampled photo with brightness threshold applied (binary). Confirms the screen "popped out" against the background.
+- `<stem>_locate_b_candidates.png` — working-resolution photo with all candidate quads drawn — green for the chosen one, red for rejects.
+- `<stem>_locate_c_validation.png` — chosen candidate warped to a normalized 160×144 (8× upscaled) with the inner-border-ring location drawn in red, and two score-encoded swatches in the top-left (darker = lower score). Lets you eyeball *why* a candidate was scored the way it was.
+- `<stem>_locate_d_output_region.png` — original photo with the final output region drawn (chosen quad expanded by margin, in green) alongside the chosen-screen quad (in cyan). Confirms the crop is taking pixels from the right place.
 
 **warp**
 - `<stem>_warp.png` — final warped (160·scale)×(144·scale) RGBA image (post both refinement passes). This is the regular pipeline intermediate, not strictly a "debug" image.
@@ -199,6 +231,7 @@ Schema by step:
 
 | Step | Key fields |
 |------|------------|
+| `locate` | `workingDim`, `candidatePoolSize`, `candidateCount`, `chosenCandidate.{score, area, corners, validation.{innerBorderScore, darkRingScore, totalScore}}`, `rejectedScores`, `marginRatio`, `outputCorners`, `outputSize`, `passThrough` |
 | `warp` | `threshold`, `contourArea`, `aspect`, `quadScore`, `sourceCorners`, `pass1.{edgeCurvatures, cornerErrors, refined}`, `pass2.{...}` |
 | `correct` | `whiteSamples.{R,G}` (count of frame blocks kept), `whiteSurfaceRange.{R,G}`, `darkSurfaceRange.{R,G}`, `dgCalibrationPixels.{R,G}` (interior DG pixels used in refinement), `framePostCorrectionP85.{R,G,B}` |
 | `crop` | `cameraRegion`, `borderMean`, `whiteFrameMean`, `borderToFrameRatio`, `validation` ("ok" \| "warn") |
@@ -246,18 +279,20 @@ The input is a phone photo of a Game Boy Camera image displayed on a Game Boy Ad
 
 ### Screen Structure (outermost to innermost)
 
-1. **Dark bezel** — the GBA SP housing around the screen, appearing as uneven dark areas due to the front-light.
-2. **Game Boy Screen** (160x144 SP pixels) — contains:
+1. **Background environment** — whatever is around the GBA SP in the photo. Can be dark (table, cloth) or cluttered/bright (cables, posters, text).
+2. **GBA SP bezel** — the plastic housing of the Game Boy Advance SP. Color varies by hardware (pink, silver, black, etc.); not a reliable detection signal.
+3. **GBA SP screen (LCD)** — the GBA SP's higher-resolution 240x160 LCD panel. The area *outside* the rendered Game Boy Screen is the LCD displaying black, brightened unevenly by the bottom-mounted front-light. This produces a dark-but-not-pure-black ring immediately surrounding the Game Boy Screen. This ring is the most reliable cue for locating the Game Boy Screen within the photo.
+4. **Game Boy Screen** (160x144 SP pixels) — the rendered GB image area on the GBA SP LCD. Contains:
    - A 16-pixel-thick frame on each side. The frame is primarily #FFFFA5 (white) with a one-pixel-thick inner border in #9494FF (dark gray). The frame has black dashes running through it: 17 horizontal dashes along top/bottom (5 pixels from outer edge) and 14 vertical dashes along left/right sides (1 pixel from outer edge). Corner dashes are fused.
    - `supporting-materials/Frame 02.png` is a 160x144 grayscale palette-swapped reference of the exact frame. The grayscale-to-color mapping is: #FFFFFF -> #FFFFA5, #A5A5A5 -> #FF9494, #525252 -> #9494FF, #000000 -> #000000.
    - `supporting-materials/frame_ascii.txt` is an ASCII art version (` ` = white, `·` = light gray, `▓` = dark gray, `█` = black).
-3. **Game Boy Camera image** (128x112 SP pixels) — the actual picture to extract, displayed in four colors: #FFFFA5, #FF9494, #9494FF, #000000.
+5. **Game Boy Camera image** (128x112 SP pixels) — the actual picture to extract, displayed in four colors: #FFFFA5, #FF9494, #9494FF, #000000.
 
 ### Image Quality Issues
 
 - **Perspective distortion** — the phone is not perfectly aligned; the screen appears as an irregular quadrilateral with lens distortion.
 - **Washed out / tinted colors** — the GBA SP front-light brightens and slightly blue-tints the screen.
-- **Uneven brightness gradient** — the side-mounted front-light creates a smooth 2D brightness gradient. Both black floor and white ceiling shift together (affine per-pixel).
+- **Uneven brightness gradient** — the bottom-mounted front-light creates a smooth 2D brightness gradient. Both black floor and white ceiling shift together (affine per-pixel).
 - **Pixel gaps** — thin dark vertical lines between LCD pixel columns, and less prominent horizontal lines between rows. Especially visible in darker areas.
 - **Pixel bleeding** — brighter pixels bleed light into adjacent dimmer pixels, especially vertically.
 - **Sub-pixel colors** — TN LCD sub-pixels (blue left, green middle, red right) cause color alignment artifacts within each pixel.
@@ -275,37 +310,52 @@ Test reference images in `test-input/` use this same grayscale palette.
 
 ## Pipeline Steps
 
-The pipeline runs five steps in order: **warp -> correct -> crop -> sample -> quantize**.
+The pipeline runs six steps in order: **locate -> warp -> correct -> crop -> sample -> quantize**.
 
-### 1. Warp (`warp.ts` / `gbcam_warp.py`)
+### 1. Locate (`locate.ts`)
+
+Finds the Game Boy Screen within a full phone photo. Generates candidate
+bright quadrilaterals at a downsampled working resolution (multi-strategy:
+bright contours, dark-ring holes, Canny+approxPolyDP), validates each
+against Frame 02 features (inner-border ring, surrounding LCD-black ring,
+aspect ratio), picks the best, and extracts the rotated rectangle
+(expanded by a proportional margin) as an axis-aligned image. Designed to
+be a near-no-op on already-cropped inputs. Opt-in via
+`PipelineOptions.locate` (default `true`).
+
+- Input: phone photo (.jpg / .png, any size)
+- Output: `<stem>_locate.png` — variable size, GB Screen approximately
+  upright with margin around the frame
+
+### 2. Warp (`warp.ts` / `gbcam_warp.py`)
 
 Detects the four corners of the white filmstrip frame using brightness thresholding and contour analysis. Applies a perspective warp to produce a (160 x scale) x (144 x scale) image (default 1280x1152 at scale=8). Includes a two-pass inner-border refinement that back-projects corrected corners and re-warps.
 
 - Input: phone photo (.jpg / .png, any size)
 - Output: `<stem>_warp.png` — (160 x scale) x (144 x scale) grayscale
 
-### 2. Correct (`correct.ts` / `gbcam_correct.py`)
+### 3. Correct (`correct.ts` / `gbcam_correct.py`)
 
 Compensates for the front-light brightness gradient. Samples the four filmstrip frame strips for white reference and the four inner border bands for dark reference. Fits degree-2 bivariate polynomials for white and dark surfaces. Applies per-pixel affine correction: `corrected = clip((observed - offset) / gain, 0, 255)`. Optionally performs iterative refinement using confident dark-gray interior pixels.
 
 - Input: `<stem>_warp.png`
 - Output: `<stem>_correct.png` — same dimensions, brightness-normalized
 
-### 3. Crop (`crop.ts` / `gbcam_crop.py`)
+### 4. Crop (`crop.ts` / `gbcam_crop.py`)
 
 Removes the filmstrip frame, keeping only the 128x112 camera area. Extracts the region starting at GB pixel (16, 16) with dimensions 128x112, in image-pixel coordinates.
 
 - Input: `<stem>_correct.png`
 - Output: `<stem>_crop.png` — (128 x scale) x (112 x scale) grayscale
 
-### 4. Sample (`sample.ts` / `gbcam_sample.py`)
+### 5. Sample (`sample.ts` / `gbcam_sample.py`)
 
 Reduces each (scale x scale) block to a single brightness value. Samples only the interior of each block, skipping margin pixels on each side to avoid pixel-gap and bleeding artifacts.
 
 - Input: `<stem>_crop.png`
 - Output: `<stem>_sample.png` — 128x112 grayscale (raw brightness values 0-255)
 
-### 5. Quantize (`quantize.ts` / `gbcam_quantize.py`)
+### 6. Quantize (`quantize.ts` / `gbcam_quantize.py`)
 
 Maps 128x112 brightness samples to the four GB palette colors (0/82/165/255). Uses k-means clustering to find the four brightness clusters, then assigns thresholds at cluster midpoints.
 

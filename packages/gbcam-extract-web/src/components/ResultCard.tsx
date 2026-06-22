@@ -1,12 +1,16 @@
 import { useRef, useEffect, useState, useCallback } from "react";
-import type { PipelineResult } from "gbcam-extract";
-import { applyPalette } from "gbcam-extract";
+import type { PipelineResult, Frame } from "gbcam-extract";
+import { applyPalette, composeFrame } from "gbcam-extract";
 import {
   canShare,
   shareImage,
   copyImageToClipboard,
 } from "../utils/shareImage.js";
 import { sanitizePaletteName } from "../utils/filenames.js";
+import {
+  frameDisplayName,
+  sanitizeFrameName,
+} from "../utils/frame-display.js";
 import { Button } from "@/shadcn/components/button";
 import { Badge } from "@/shadcn/components/badge";
 import {
@@ -17,6 +21,9 @@ import {
 } from "@/shadcn/components/card";
 import { toast } from "sonner";
 import { X, Download, Share2, Copy as CopyIcon } from "lucide-react";
+import { FramePicker } from "./FramePicker.js";
+import type { FrameSelection } from "../types/frame-selection.js";
+import { buildOutputCanvas } from "../utils/buildOutputCanvas.js";
 
 interface ResultCardProps {
   result: PipelineResult;
@@ -26,45 +33,31 @@ interface ResultCardProps {
   paletteName: string;
   outputScale?: number;
   previewScale?: number;
+  /** All frames available in the catalog (for the picker). */
+  frames: Frame[];
+  /** The frame selection chosen on this result. Undefined = follow default. */
+  frameOverride: FrameSelection;
+  onFrameOverrideChange: (next: FrameSelection) => void;
+  /** Already resolved (effective) frame to render — null = no frame. */
+  effectiveFrame: Frame | null;
+  /** Display label for the "Default — …" picker tile. */
+  defaultFrameLabel: string;
+  /**
+   * Currently-resolved global default frame. Shown in the "Default — …" tile
+   * inside the per-result picker. Null = global default is "no frame".
+   */
+  defaultFrame: Frame | null;
+  /** Disable the FramePicker (e.g. while the catalog is still loading). */
+  framePickerDisabled?: boolean;
+  /** IDs of user-uploaded frames; threaded through to the FramePicker. */
+  userFrameIds?: Set<string>;
+  /** Persist new user frames; threaded through to the FramePicker. */
+  onAddUserFrames?: (frames: Frame[]) => { added: number };
+  /** Persist new original frames; threaded through to the FramePicker. */
+  onAddOriginalFrames?: (frames: Frame[]) => { added: number };
+  /** Delete a user frame; threaded through to the FramePicker. */
+  onDeleteUserFrame?: (id: string) => void;
   onDelete?: () => void;
-}
-
-/** Build an off-screen canvas at the given scale for download/share/copy. */
-function buildOutputCanvas(
-  result: PipelineResult,
-  palette: [string, string, string, string],
-  scale: number,
-): HTMLCanvasElement | null {
-  try {
-    if (!result.grayscale?.data) return null;
-    const colored = applyPalette(result.grayscale, palette);
-    if (!colored?.data?.length) return null;
-
-    const canvas = document.createElement("canvas");
-    canvas.width = colored.width * scale;
-    canvas.height = colored.height * scale;
-    const ctx = canvas.getContext("2d")!;
-    ctx.imageSmoothingEnabled = false;
-
-    const tmp = document.createElement("canvas");
-    tmp.width = colored.width;
-    tmp.height = colored.height;
-    tmp
-      .getContext("2d")!
-      .putImageData(
-        new ImageData(
-          new Uint8ClampedArray(colored.data),
-          colored.width,
-          colored.height,
-        ),
-        0,
-        0,
-      );
-    ctx.drawImage(tmp, 0, 0, canvas.width, canvas.height);
-    return canvas;
-  } catch {
-    return null;
-  }
 }
 
 export function ResultCard({
@@ -75,6 +68,17 @@ export function ResultCard({
   paletteName,
   outputScale = 1,
   previewScale = 2,
+  frames,
+  frameOverride,
+  onFrameOverrideChange,
+  effectiveFrame,
+  defaultFrameLabel,
+  defaultFrame,
+  framePickerDisabled,
+  userFrameIds,
+  onAddUserFrames,
+  onAddOriginalFrames,
+  onDeleteUserFrame,
   onDelete,
 }: ResultCardProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -84,34 +88,41 @@ export function ResultCard({
     setShareSupported(canShare());
   }, []);
 
-  // Render preview canvas at previewScale
+  // Render preview at previewScale, applying the effective frame if any.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
     try {
       if (!result.grayscale?.data) return;
-      if (!(result.grayscale.data instanceof Uint8ClampedArray)) {
-        console.warn("grayscale.data is not Uint8ClampedArray");
+      let rendered;
+      if (effectiveFrame) {
+        try {
+          rendered = composeFrame(result.grayscale, effectiveFrame, palette);
+        } catch (err) {
+          console.error("composeFrame failed; falling back to bare image", err);
+          rendered = applyPalette(result.grayscale, palette);
+        }
+      } else {
+        rendered = applyPalette(result.grayscale, palette);
       }
-      const colored = applyPalette(result.grayscale, palette);
-      if (!colored?.data?.length) return;
+      if (!rendered?.data?.length) return;
 
       const scale = previewScale;
-      canvas.width = colored.width * scale;
-      canvas.height = colored.height * scale;
+      canvas.width = rendered.width * scale;
+      canvas.height = rendered.height * scale;
       const ctx = canvas.getContext("2d")!;
       ctx.imageSmoothingEnabled = false;
 
       const tmp = document.createElement("canvas");
-      tmp.width = colored.width;
-      tmp.height = colored.height;
+      tmp.width = rendered.width;
+      tmp.height = rendered.height;
       tmp
         .getContext("2d")!
         .putImageData(
           new ImageData(
-            new Uint8ClampedArray(colored.data),
-            colored.width,
-            colored.height,
+            new Uint8ClampedArray(rendered.data),
+            rendered.width,
+            rendered.height,
           ),
           0,
           0,
@@ -120,23 +131,28 @@ export function ResultCard({
     } catch (err) {
       console.error("Error rendering image:", err);
     }
-  }, [result, palette, previewScale]);
+  }, [result, palette, previewScale, effectiveFrame]);
 
   const handleDownload = useCallback(() => {
-    const outputCanvas = buildOutputCanvas(result, palette, outputScale);
+    const outputCanvas = buildOutputCanvas(result, palette, effectiveFrame, outputScale);
     if (!outputCanvas) return;
     const basename = filename.replace(/\.[^.]+$/, "");
-    const sanitized = sanitizePaletteName(paletteName);
+    const paletteSlug = sanitizePaletteName(paletteName);
+    const effectiveFrameName = effectiveFrame
+      ? frameDisplayName(effectiveFrame, frames)
+      : "";
+    const frameSlug = effectiveFrame ? sanitizeFrameName(effectiveFrameName) : "";
+
     const link = document.createElement("a");
-    link.download = sanitized
-      ? `${basename}_${sanitized}_gb.png`
-      : `${basename}_gb.png`;
+    link.download = [basename, paletteSlug, frameSlug, "gb"]
+      .filter(Boolean)
+      .join("_") + ".png";
     link.href = outputCanvas.toDataURL("image/png");
     link.click();
-  }, [result, palette, outputScale, filename, paletteName]);
+  }, [result, palette, effectiveFrame, outputScale, filename, paletteName]);
 
   const handleShare = useCallback(async () => {
-    const outputCanvas = buildOutputCanvas(result, palette, outputScale);
+    const outputCanvas = buildOutputCanvas(result, palette, effectiveFrame, outputScale);
     if (!outputCanvas) return;
     try {
       await shareImage(
@@ -146,10 +162,10 @@ export function ResultCard({
     } catch (err) {
       console.error("Failed to share image:", err);
     }
-  }, [result, palette, outputScale, filename]);
+  }, [result, palette, effectiveFrame, outputScale, filename]);
 
   const handleCopy = useCallback(async () => {
-    const outputCanvas = buildOutputCanvas(result, palette, outputScale);
+    const outputCanvas = buildOutputCanvas(result, palette, effectiveFrame, outputScale);
     if (!outputCanvas) return;
     try {
       await copyImageToClipboard(outputCanvas);
@@ -159,7 +175,7 @@ export function ResultCard({
       toast.error(`Copy failed: ${errorMsg}`);
       console.error("Failed to copy image:", err);
     }
-  }, [result, palette, outputScale]);
+  }, [result, palette, effectiveFrame, outputScale]);
 
   return (
     <Card className="p-3 sm:p-4">
@@ -192,21 +208,38 @@ export function ResultCard({
           className="rounded border self-start"
           style={{ imageRendering: "pixelated", maxWidth: "100%" }}
         />
-        <div className="flex flex-wrap gap-2 items-start content-start">
-          <Button onClick={handleDownload}>
-            <Download data-icon="inline-start" />
-            Download PNG
-          </Button>
-          {shareSupported && (
-            <Button variant="secondary" onClick={handleShare}>
-              <Share2 data-icon="inline-start" />
-              Share
+        <div className="flex flex-col gap-2 items-start">
+          <div className="flex flex-wrap gap-2 items-start content-start">
+            <Button onClick={handleDownload}>
+              <Download data-icon="inline-start" />
+              Download PNG
             </Button>
-          )}
-          <Button variant="secondary" onClick={handleCopy} aria-label="Copy image">
-            <CopyIcon data-icon="inline-start" />
-            Copy
-          </Button>
+            {shareSupported && (
+              <Button variant="secondary" onClick={handleShare}>
+                <Share2 data-icon="inline-start" />
+                Share
+              </Button>
+            )}
+            <Button variant="secondary" onClick={handleCopy} aria-label="Copy image">
+              <CopyIcon data-icon="inline-start" />
+              Copy
+            </Button>
+          </div>
+          <FramePicker
+            value={frameOverride}
+            onChange={onFrameOverrideChange}
+            palette={palette}
+            frames={frames}
+            mode="result"
+            defaultFrameLabel={defaultFrameLabel}
+            defaultFrame={defaultFrame}
+            image={result.grayscale}
+            disabled={framePickerDisabled}
+            userFrameIds={userFrameIds}
+            onAddUserFrames={onAddUserFrames}
+            onAddOriginalFrames={onAddOriginalFrames}
+            onDeleteUserFrame={onDeleteUserFrame}
+          />
         </div>
       </CardContent>
     </Card>

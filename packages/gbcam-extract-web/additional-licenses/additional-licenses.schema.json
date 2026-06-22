@@ -20,6 +20,10 @@
             "type": "string",
             "description": "Package name"
           },
+          "id": {
+            "type": "string",
+            "description": "Unique ID for deep-linking (optional)"
+          },
           "version": {
             "type": "string",
             "description": "Package version"

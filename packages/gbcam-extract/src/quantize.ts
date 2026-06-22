@@ -12,16 +12,38 @@ import {
   GB_COLORS,
   CAM_W,
   CAM_H,
+  FRAME_THICK,
+  SCREEN_W,
   createGBImageData,
 } from "./common.js";
 import { getCV, withMats } from "./opencv.js";
+import { type DebugCollector, renderRGScatter, upscale } from "./debug.js";
 import {
-  type DebugCollector,
-  renderRGScatter,
-  upscale,
-} from "./debug.js";
+  buildFrameClassifier,
+  classifyByFrame,
+  cameraToFrameCoords,
+  collectFrameAnchors,
+} from "./frame-classify.js";
 
 export interface QuantizeOptions {
+  /**
+   * Optional warped/corrected color image at (SCREEN_W*scale, SCREEN_H*scale).
+   * When provided, quantize uses frame-aware classification: it samples the
+   * frame dashes (which contain all four palette colors) to fit per-color
+   * surfaces for R/G/B, then classifies each camera pixel by nearest
+   * predicted color at its location. Falls back to 2D RG k-means when not
+   * provided.
+   */
+  corrected?: GBImageData;
+  /**
+   * Optional warped (pre-correct) RGBA image at (SCREEN_W*scale,
+   * SCREEN_H*scale). The `correct` step's affine gain amplifies bleed-lifted
+   * DG pixels' R upward across the DG/LG boundary; the pre-correct warp still
+   * separates DG (low R) from LG (high R) cleanly. Used to recover sparse
+   * DG-on-black dots that correct pushes into LG.
+   */
+  warped?: GBImageData;
+  scale?: number;
   debug?: DebugCollector;
 }
 
@@ -118,6 +140,62 @@ function bestClusterToPalette(
     }
   }
   return new Int32Array(bestPerm);
+}
+
+/**
+ * Run cv.kmeans on an Nx3 float32 (R, G, B*scale) sample set with warm
+ * initialisation. Returns { labels: Int32Array(N), centers: Float32Array(4*3) }.
+ * The caller scales B before passing in to control how much B affects the
+ * Euclidean distance vs R/G.
+ */
+function runKmeans3D(
+  samplesRGB: Float32Array,
+  n: number,
+  initCenters: Float32Array,
+): { labels: Int32Array; centers: Float32Array } {
+  const cv = getCV();
+  return withMats((track) => {
+    const samplesMat = track(new cv.Mat(n, 3, cv.CV_32F));
+    samplesMat.data32F.set(samplesRGB);
+    const labelsMat = track(new cv.Mat(n, 1, cv.CV_32S));
+    const centersMat = track(new cv.Mat(4, 3, cv.CV_32F));
+    for (let i = 0; i < n; i++) {
+      const r = samplesRGB[i * 3];
+      const g = samplesRGB[i * 3 + 1];
+      const b = samplesRGB[i * 3 + 2];
+      let bestK = 0;
+      let bestD = Infinity;
+      for (let k = 0; k < 4; k++) {
+        const cr = initCenters[k * 3];
+        const cg = initCenters[k * 3 + 1];
+        const cb = initCenters[k * 3 + 2];
+        const d = (r - cr) ** 2 + (g - cg) ** 2 + (b - cb) ** 2;
+        if (d < bestD) {
+          bestD = d;
+          bestK = k;
+        }
+      }
+      labelsMat.data32S[i] = bestK;
+    }
+    const criteria = new cv.TermCriteria(
+      cv.TermCriteria_EPS + cv.TermCriteria_MAX_ITER,
+      300,
+      0.1,
+    );
+    cv.kmeans(
+      samplesMat,
+      4,
+      labelsMat,
+      criteria,
+      1,
+      cv.KMEANS_USE_INITIAL_LABELS,
+      centersMat,
+    );
+    return {
+      labels: new Int32Array(labelsMat.data32S),
+      centers: new Float32Array(centersMat.data32F),
+    };
+  });
 }
 
 /**
@@ -272,22 +350,25 @@ function gValleyThreshold(
  * 2. Strip k-means refinement for lateral gradient
  * 3. G-valley LG/WH refinement for pixel bleeding correction
  */
-export function quantize(input: GBImageData, options?: QuantizeOptions): GBImageData {
+export function quantize(
+  input: GBImageData,
+  options?: QuantizeOptions,
+): GBImageData {
   if (input.width !== CAM_W || input.height !== CAM_H) {
     throw new Error(
       `Expected ${CAM_W}x${CAM_H}, got ${input.width}x${input.height}`,
     );
   }
+  const dbg = options?.debug;
 
   const N = CAM_W * CAM_H;
   const targetsRG = PALETTE_RG;
-  const dbg = options?.debug;
 
-  // Extract RG values (Nx2 float32) and full RGB (Nx3)
+  // Extract RG values (Nx2 float32) for 2D k-means.
   const flatRG = new Float32Array(N * 2);
   for (let i = 0; i < N; i++) {
-    flatRG[i * 2] = input.data[i * 4]; // R
-    flatRG[i * 2 + 1] = input.data[i * 4 + 1]; // G
+    flatRG[i * 2] = input.data[i * 4];
+    flatRG[i * 2 + 1] = input.data[i * 4 + 1];
   }
 
   // ── 1. Global k-means ──
@@ -383,12 +464,53 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
     const stripResult = runKmeans(stripRG, sN, globalCentersPO);
     const c2p = bestClusterToPalette(stripResult.centers, targetsRG);
 
-    // Map strip cluster labels to palette and store
+    // Build palette-ordered strip centers, then blend toward global centers.
+    // This anchors per-strip drift (which over-classifies borderline pixels)
+    // while still allowing local adaptation to brightness gradients.
+    const blendedCenters = new Float32Array(4 * 2);
+    const ANCHOR_W = 0.27; // weight on global (vs 1 - ANCHOR_W on strip)
+    const stripCentersPO = new Float32Array(4 * 2);
+    for (let pi = 0; pi < 4; pi++) {
+      let ci = -1;
+      for (let cj = 0; cj < 4; cj++) {
+        if (c2p[cj] === pi) {
+          ci = cj;
+          break;
+        }
+      }
+      if (ci >= 0) {
+        stripCentersPO[pi * 2] = stripResult.centers[ci * 2];
+        stripCentersPO[pi * 2 + 1] = stripResult.centers[ci * 2 + 1];
+      } else {
+        stripCentersPO[pi * 2] = globalCentersPO[pi * 2];
+        stripCentersPO[pi * 2 + 1] = globalCentersPO[pi * 2 + 1];
+      }
+      blendedCenters[pi * 2] =
+        stripCentersPO[pi * 2] * (1 - ANCHOR_W) +
+        globalCentersPO[pi * 2] * ANCHOR_W;
+      blendedCenters[pi * 2 + 1] =
+        stripCentersPO[pi * 2 + 1] * (1 - ANCHOR_W) +
+        globalCentersPO[pi * 2 + 1] * ANCHOR_W;
+    }
+
+    // Re-classify strip pixels using the blended centers
     idx = 0;
     for (let y = 0; y < CAM_H; y++) {
       for (let x = colStart; x < colEnd; x++) {
-        const palLabel = c2p[stripResult.labels[idx]];
-        stripLabels[(y * CAM_W + x) * nStrips + s] = palLabel;
+        const r = stripRG[idx * 2];
+        const g = stripRG[idx * 2 + 1];
+        let bestPi = 0,
+          bestD = Infinity;
+        for (let pi = 0; pi < 4; pi++) {
+          const dr = r - blendedCenters[pi * 2];
+          const dg = g - blendedCenters[pi * 2 + 1];
+          const d = dr * dr + dg * dg;
+          if (d < bestD) {
+            bestD = d;
+            bestPi = pi;
+          }
+        }
+        stripLabels[(y * CAM_W + x) * nStrips + s] = bestPi;
         idx++;
       }
     }
@@ -484,7 +606,7 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
     // Apply threshold to LG/WH pixels with high R
     for (let i = 0; i < N; i++) {
       if (
-        flatRG[i * 2] > 190 &&
+        flatRG[i * 2] > 170 &&
         (finalLabels[i] === 2 || finalLabels[i] === 3)
       ) {
         const newLabel = flatRG[i * 2 + 1] >= gThresh ? 3 : 2;
@@ -500,6 +622,578 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
           `(LG center G=${lgCG.toFixed(1)}, WH center G=${whCG.toFixed(1)}), ` +
           `changed ${valleyChanged} px`,
       );
+    }
+  }
+
+  // ── 3c. B-aware reclassification of DG ↔ warm misclassifications ──
+  // DG palette has B=255 (high), LG/WH have B=148-165 (low). The 2D RG
+  // k-means ignores B — but B is precisely what should distinguish a
+  // washed-out warm pixel (PSF-bleed-inflated G near DG center) from a
+  // real DG pixel. Compute the cluster mean B per class, then bidirectional
+  // reclassify any pixel whose B clearly contradicts its label.
+  {
+    let dgBsum = 0,
+      dgBcount = 0;
+    let warmBsum = 0,
+      warmBcount = 0; // LG + WH
+    for (let i = 0; i < N; i++) {
+      const b = input.data[i * 4 + 2];
+      if (finalLabels[i] === 1) {
+        dgBsum += b;
+        dgBcount++;
+      }
+      if (finalLabels[i] === 2 || finalLabels[i] === 3) {
+        warmBsum += b;
+        warmBcount++;
+      }
+    }
+    if (dgBcount >= 50 && warmBcount >= 50) {
+      const dgMeanB = dgBsum / dgBcount;
+      const warmMeanB = warmBsum / warmBcount;
+      const sep = dgMeanB - warmMeanB; // expect positive
+      if (sep > 5) {
+        const lgR = globalCentersPO[2 * 2];
+        const lgG = globalCentersPO[2 * 2 + 1];
+        const whR = globalCentersPO[3 * 2];
+        const whG = globalCentersPO[3 * 2 + 1];
+        const dgR = globalCentersPO[1 * 2];
+        const dgG = globalCentersPO[1 * 2 + 1];
+        // Lower threshold: pixels currently DG with B below this look warm.
+        // Clamp to [175, 180] to protect against false flips in tests where
+        // DG and warm B distributions overlap (e.g., bathhouse-1, where
+        // dgMeanB-30 > 180) while still catching warm-but-DG-labeled pixels
+        // in tests with dim DG.
+        const bDgLowThresh = Math.max(195, Math.min(dgMeanB - 30, 180));
+        // Upper threshold: pixels currently warm with B above this look DG
+        const bWarmHiThresh = warmMeanB + sep * 0.6;
+        let flippedFromDg = 0;
+        let flippedToDg = 0;
+        for (let i = 0; i < N; i++) {
+          const lbl = finalLabels[i];
+          const b = input.data[i * 4 + 2];
+          const r = flatRG[i * 2];
+          const g = flatRG[i * 2 + 1];
+          const dLG = (r - lgR) ** 2 + (g - lgG) ** 2;
+          const dWH = (r - whR) ** 2 + (g - whG) ** 2;
+          const dDG = (r - dgR) ** 2 + (g - dgG) ** 2;
+          if (lbl === 1 && b < bDgLowThresh) {
+            const dWarm = Math.min(dLG, dWH);
+            // Distances here are SQUARED — ratio 1.7 sq ≈ 1.30 linear, so
+            // we permit warm to be up to 30% farther in RG than DG when B
+            // clearly indicates warm content.
+            if (dWarm < dDG * 1.7) {
+              finalLabels[i] = dLG < dWH ? 2 : 3;
+              flippedFromDg++;
+            }
+          } else if ((lbl === 2 || lbl === 3) && b > dgMeanB - 20) {
+            // Pixel labeled warm but B is in the DG range — require RG
+            // distance to also strongly indicate DG (much closer than warm)
+            const dWarm = Math.min(dLG, dWH);
+            const ratio = b >= dgMeanB ? 0.95 : 0.85;
+            if (dDG < dWarm * ratio) {
+              finalLabels[i] = 1;
+              flippedToDg++;
+            }
+          }
+        }
+        if (dbg) {
+          dbg.log(
+            `[quantize] B reclassify: dgMeanB=${dgMeanB.toFixed(1)} warmMeanB=${warmMeanB.toFixed(1)} flipDg->warm=${flippedFromDg} flipWarm->dg=${flippedToDg}`,
+          );
+        }
+      }
+    }
+  }
+
+  // ── 3d. Confidence-based neighbour refinement (iterative) ──
+  // For each pixel, compute its 3D RGB distance to the empirical cluster
+  // centres of all four palette classes. Pixels whose nearest cluster is
+  // decisively closer than the second-nearest are "confident". Ambiguous
+  // pixels get reclassified by a vote among confident neighbours with
+  // similar RGB. We iterate so newly-confident pixels in pass N+1 can
+  // anchor still-ambiguous neighbours in subsequent passes.
+  let confidenceRefineTotal = 0;
+  for (let iter = 0; iter < 8; iter++) {
+    // Two-pass cluster mean: first using all pixels, then recompute using
+    // only confident pixels so cluster centres aren't biased by
+    // borderline/mis-labelled pixels.
+    let cR3 = [0, 0, 0, 0];
+    let cG3 = [0, 0, 0, 0];
+    let cB3 = [0, 0, 0, 0];
+    let cN3 = [0, 0, 0, 0];
+    for (let i = 0; i < N; i++) {
+      const lbl = finalLabels[i];
+      cR3[lbl] += flatRG[i * 2];
+      cG3[lbl] += flatRG[i * 2 + 1];
+      cB3[lbl] += input.data[i * 4 + 2];
+      cN3[lbl]++;
+    }
+    for (let p = 0; p < 4; p++) {
+      if (cN3[p] > 0) {
+        cR3[p] /= cN3[p];
+        cG3[p] /= cN3[p];
+        cB3[p] /= cN3[p];
+      }
+    }
+    // First-pass confidence based on biased means
+    const isConfident = new Uint8Array(N);
+    for (let i = 0; i < N; i++) {
+      const r = flatRG[i * 2];
+      const g = flatRG[i * 2 + 1];
+      const b = input.data[i * 4 + 2];
+      let dBest = Infinity;
+      let dSecond = Infinity;
+      for (let p = 0; p < 4; p++) {
+        const d =
+          (r - cR3[p]) * (r - cR3[p]) +
+          (g - cG3[p]) * (g - cG3[p]) +
+          (b - cB3[p]) * (b - cB3[p]);
+        if (d < dBest) {
+          dSecond = dBest;
+          dBest = d;
+        } else if (d < dSecond) {
+          dSecond = d;
+        }
+      }
+      isConfident[i] = dBest > 0 && dSecond >= dBest * 1.96 ? 1 : 0;
+    }
+    // Recompute cluster means using only confident pixels — these
+    // represent the "core" of each cluster, not pulled down by
+    // borderline pixels that may themselves be mis-labelled.
+    const cR3c = [0, 0, 0, 0];
+    const cG3c = [0, 0, 0, 0];
+    const cB3c = [0, 0, 0, 0];
+    const cN3c = [0, 0, 0, 0];
+    for (let i = 0; i < N; i++) {
+      if (!isConfident[i]) continue;
+      const lbl = finalLabels[i];
+      cR3c[lbl] += flatRG[i * 2];
+      cG3c[lbl] += flatRG[i * 2 + 1];
+      cB3c[lbl] += input.data[i * 4 + 2];
+      cN3c[lbl]++;
+    }
+    for (let p = 0; p < 4; p++) {
+      if (cN3c[p] > 50) {
+        cR3[p] = cR3c[p] / cN3c[p];
+        cG3[p] = cG3c[p] / cN3c[p];
+        cB3[p] = cB3c[p] / cN3c[p];
+      }
+    }
+    // Recompute confidence using cleaner means
+    for (let i = 0; i < N; i++) {
+      const r = flatRG[i * 2];
+      const g = flatRG[i * 2 + 1];
+      const b = input.data[i * 4 + 2];
+      let dBest = Infinity;
+      let dSecond = Infinity;
+      for (let p = 0; p < 4; p++) {
+        const d =
+          (r - cR3[p]) * (r - cR3[p]) +
+          (g - cG3[p]) * (g - cG3[p]) +
+          (b - cB3[p]) * (b - cB3[p]);
+        if (d < dBest) {
+          dSecond = dBest;
+          dBest = d;
+        } else if (d < dSecond) {
+          dSecond = d;
+        }
+      }
+      isConfident[i] = dBest > 0 && dSecond >= dBest * 1.96 ? 1 : 0;
+    }
+    const WIN = 7;
+    const MD_MAX = 30;
+    const SIGMA = 15;
+    const AMBIG_DISCOUNT = 0.5;
+    const MIN_DOMINANCE = 2.0;
+    const MIN_VOTE = 0.1;
+    // Palette-target centres (the ideal colour each class should be when
+    // observed by a perfect pipeline). Used as a secondary anchor for
+    // ambiguous pixels: if the palette-target nearest class differs from
+    // the empirical-cluster nearest, the palette gets a vote too. Each
+    // palette vote is weighted by the palette-target distance ratio
+    // (more decisive = more vote).
+    const PAL_R: [number, number, number, number] = [0, 148, 255, 255];
+    const PAL_G: [number, number, number, number] = [0, 148, 148, 255];
+    const PAL_B: [number, number, number, number] = [0, 255, 148, 165];
+    const PAL_VOTE_SCALE = 0.12;
+    let refined = 0;
+    const newLabels = new Uint8Array(finalLabels);
+    for (let i = 0; i < N; i++) {
+      if (isConfident[i]) continue;
+      const cx = i % CAM_W;
+      const cy = Math.floor(i / CAM_W);
+      const r = flatRG[i * 2];
+      const g = flatRG[i * 2 + 1];
+      const b = input.data[i * 4 + 2];
+      const votes = [0, 0, 0, 0];
+      for (let dy = -WIN; dy <= WIN; dy++) {
+        const ny = cy + dy;
+        if (ny < 0 || ny >= CAM_H) continue;
+        for (let dx = -WIN; dx <= WIN; dx++) {
+          const nx = cx + dx;
+          if (nx < 0 || nx >= CAM_W) continue;
+          const ni = ny * CAM_W + nx;
+          if (ni === i) continue;
+          const nr = flatRG[ni * 2];
+          const ng = flatRG[ni * 2 + 1];
+          const nb = input.data[ni * 4 + 2];
+          const md = Math.abs(r - nr) + Math.abs(g - ng) + Math.abs(b - nb);
+          if (md > MD_MAX) continue;
+          let w = Math.exp(-md / SIGMA);
+          if (!isConfident[ni]) w *= AMBIG_DISCOUNT;
+          votes[finalLabels[ni]] += w;
+        }
+      }
+      // Palette-target vote: which palette class is the pixel closest to
+      // when compared against the IDEAL palette RGB? Independent of the
+      // (potentially noisy) empirical cluster centres. This captures the
+      // "what colour was the LCD supposed to display here?" signal. The
+      // palette is most reliable for BK (R/G/B all ≈ 0) and DG (only
+      // class with both low R/G AND high B); LG and WH share R=255 in
+      // the palette so their differentiation comes from G — we let the
+      // existing G-valley step handle that. So we only count a palette
+      // vote when palBest is BK or DG (where palette is decisive on
+      // multiple channels).
+      let palBest = 0;
+      let palBestD = Infinity;
+      let palSecond = Infinity;
+      for (let p = 0; p < 4; p++) {
+        const dR = r - PAL_R[p];
+        const dG = g - PAL_G[p];
+        const dB = b - PAL_B[p];
+        const d = dR * dR + dG * dG + dB * dB;
+        if (d < palBestD) {
+          palSecond = palBestD;
+          palBestD = d;
+          palBest = p;
+        } else if (d < palSecond) {
+          palSecond = d;
+        }
+      }
+      if (palBestD > 0 && (palBest === 0 || palBest === 1)) {
+        const palMargin = Math.sqrt(palSecond / palBestD) - 1;
+        if (palMargin > 0) {
+          votes[palBest] += palMargin * PAL_VOTE_SCALE;
+        }
+      }
+      let bestP = 0;
+      let bestV = -1;
+      for (let p = 0; p < 4; p++) {
+        if (votes[p] > bestV) {
+          bestV = votes[p];
+          bestP = p;
+        }
+      }
+      const curLabel = finalLabels[i];
+      if (bestP === curLabel) continue;
+      if (bestV < MIN_VOTE) continue;
+      const curV = votes[curLabel];
+      if (curV > 0 && bestV < curV * MIN_DOMINANCE) continue;
+      newLabels[i] = bestP;
+      refined++;
+    }
+    for (let i = 0; i < N; i++) finalLabels[i] = newLabels[i];
+    if (dbg) {
+      let nConf = 0;
+      for (let i = 0; i < N; i++) if (isConfident[i]) nConf++;
+      dbg.log(
+        `[quantize] confidence refine pass ${iter + 1}: ${nConf}/${N} pixels confident, ${refined} ambiguous pixels reclassified via similar-RGB neighbour vote`,
+      );
+    }
+    confidenceRefineTotal += refined;
+    if (refined === 0) break;
+  }
+
+  // ── 3e. Spatial anomaly detection: DG pixel surrounded by all-DG
+  // neighbours with R substantially higher than neighbours' R avg is
+  // anomalous — likely a true LG embedded in a DG region (PSF flattens
+  // the R difference but it's still measurably above the local DG mean).
+  // This is principled: based on the pixel's actual R vs the local DG
+  // baseline, not hard-coded patterns.
+  {
+    let anomalyFlipped = 0;
+    const newLabels = new Uint8Array(finalLabels);
+    for (let i = 0; i < N; i++) {
+      if (finalLabels[i] !== 1) continue; // only check DG-labelled pixels
+      const cx = i % CAM_W;
+      const cy = Math.floor(i / CAM_W);
+      let allDG = true;
+      let nR = 0;
+      let nCount = 0;
+      for (const [ddx, ddy] of [
+        [-1, 0],
+        [1, 0],
+        [0, -1],
+        [0, 1],
+      ]) {
+        const nx = cx + ddx;
+        const ny = cy + ddy;
+        if (nx < 0 || nx >= CAM_W || ny < 0 || ny >= CAM_H) continue;
+        const ni = ny * CAM_W + nx;
+        if (finalLabels[ni] !== 1) {
+          allDG = false;
+          break;
+        }
+        nR += flatRG[ni * 2];
+        nCount++;
+      }
+      if (!allDG || nCount < 4) continue;
+      const navgR = nR / nCount;
+      const r = flatRG[i * 2];
+      // Require R to also be above 160 (rough midpoint between palette
+      // DG.R=148 and LG.R=255) — without this guard, ordinary DG pixels
+      // with R slightly above an unusually-dim DG neighbour also flip.
+      if (r >= 160 && r - navgR >= 25) {
+        newLabels[i] = 2; // flip to LG
+        anomalyFlipped++;
+      }
+    }
+    for (let i = 0; i < N; i++) finalLabels[i] = newLabels[i];
+    if (dbg && anomalyFlipped > 0) {
+      dbg.log(
+        `[quantize] DG-in-DG anomaly: ${anomalyFlipped} pixels reclassified DG → LG (R ≥ 25 above local DG mean)`,
+      );
+    }
+  }
+
+  // ── 3f. Per-column local LG/WH G-valley. Edge columns get uniformly
+  // brightened by frame + vertical light bleed, lifting their LG pixels' G (and
+  // even R/B) until they read as WH against the GLOBAL threshold. But WITHIN a
+  // column the LG level and the WH level stay clearly separated, so a per-
+  // column G valley recovers the right split. Clean columns reproduce ~the
+  // global valley (no change); only the bled columns shift. Guarded to fire
+  // only on columns with a genuinely bimodal LG/WH G distribution.
+  {
+    let colFlipped = 0;
+    const MIN_PTS = 12;
+    const MIN_SPREAD = 40; // LG/WH G levels must be this far apart in the column
+    const MIN_DEPTH = 0.6; // valley must be ≤ this × the smaller peak (a real dip)
+    // Only the outermost columns: the bright filmstrip frame bleeds light
+    // horizontally into them, which (compounded with vertical bleed) is what
+    // uniformly lifts their LG pixels into the WH range. Interior columns are
+    // left to the global/strip classification (touching them trades errors).
+    const EDGE = 2;
+    for (let x = 0; x < CAM_W; x++) {
+      if (x >= EDGE && x < CAM_W - EDGE) continue;
+      const gv: number[] = [];
+      const idx: number[] = [];
+      for (let y = 0; y < CAM_H; y++) {
+        const i = y * CAM_W + x;
+        if (finalLabels[i] === 2 || finalLabels[i] === 3) {
+          gv.push(flatRG[i * 2 + 1]);
+          idx.push(i);
+        }
+      }
+      if (gv.length < MIN_PTS) continue;
+      let lo = Infinity,
+        hi = -Infinity;
+      for (const g of gv) {
+        if (g < lo) lo = g;
+        if (g > hi) hi = g;
+      }
+      if (hi - lo < MIN_SPREAD) continue;
+      const nb = Math.round(hi - lo) + 1;
+      const hist = new Array<number>(nb).fill(0);
+      for (const g of gv)
+        hist[Math.min(nb - 1, Math.max(0, Math.round(g - lo)))]++;
+      const sm = gaussianFilter1d(hist, Math.max(2, (hi - lo) / 12));
+      // Tallest peak, then the tallest peak separated from it by a dip.
+      let p1 = 0;
+      for (let k = 1; k < nb; k++) if (sm[k] > sm[p1]) p1 = k;
+      let p2 = -1;
+      for (let k = 0; k < nb; k++) {
+        if (Math.abs(k - p1) < (hi - lo) / 6) continue;
+        if (p2 < 0 || sm[k] > sm[p2]) p2 = k;
+      }
+      if (p2 < 0) continue;
+      const a = Math.min(p1, p2),
+        b = Math.max(p1, p2);
+      let valley = a;
+      for (let k = a + 1; k <= b; k++) if (sm[k] < sm[valley]) valley = k;
+      const peakMin = Math.min(sm[p1], sm[p2]);
+      if (peakMin <= 0 || sm[valley] > MIN_DEPTH * peakMin) continue; // not clearly bimodal
+      // Only act when the column's lower (LG) mode is LIFTED above the global
+      // LG level — the signature of frame/vertical bleed. A normal edge column
+      // (LG at its usual G) is already classified correctly globally, and
+      // re-thresholding it only flips correct WH pixels.
+      const lowerModeG = lo + Math.min(p1, p2);
+      if (lowerModeG <= paletteCenters[2][1] + 30) continue;
+      const thr = lo + valley;
+      for (let j = 0; j < idx.length; j++) {
+        const want = gv[j] < thr ? 2 : 3;
+        if (want !== finalLabels[idx[j]]) {
+          finalLabels[idx[j]] = want;
+          colFlipped++;
+        }
+      }
+    }
+    if (dbg && colFlipped > 0) {
+      dbg.log(
+        `[quantize] per-column LG/WH valley: ${colFlipped} pixels reclassified`,
+      );
+    }
+  }
+
+  // ── 3g. Local adaptive WH/LG threshold (the LG↔WH split is a 1D decision
+  // on G — LG ≈ red/low-G, WH ≈ yellow/high-G). The global G-valley applies
+  // ONE such boundary to the whole frame, but the front-light gradient leaves
+  // WH spatially varying in brightness: where WH is dimmed, its dither dots'
+  // absolute G falls below the global threshold and is mis-labelled LG —
+  // flattening real WH/LG dither into solid LG. A single global 1D threshold
+  // fundamentally can't separate spatially-varying WH from LG (and a per-pixel
+  // RG-distance can't either — a bleed-lifted LG pixel and a dimmed WH pixel
+  // have near-identical colour; only their LOCAL context differs).
+  //
+  // So decide the LG/WH split from each pixel's LOCAL window: build the
+  // warm-pixel (LG/WH) G histogram in a small neighbourhood, and if it is
+  // genuinely bimodal (two G-modes with a real dip), threshold at the local
+  // valley. The local WH and LG levels stay cleanly separated regardless of
+  // the regional brightness, so this recovers the right split everywhere. In
+  // a uniform or non-bimodal window it makes no change (falls back to the
+  // global classification), and the outermost columns are left to the
+  // per-column step (3f). Net effect on the reference corpora: tier-1
+  // normal unchanged, full slightly improved, self-consistency improved.
+  {
+    const RADIUS = 6;
+    const MIN_WARM = 24;
+    const MIN_SPREAD = 45;  // local warm-G range must show real LG/WH separation
+    const MIN_DEPTH = 0.6;  // valley ≤ this × the smaller mode (a genuine dip)
+    const EDGE = 2;         // outermost columns are owned by the per-column step (3f)
+    const whFloor = paletteCenters[2][1] + 40; // upper mode must be clearly above LG to be WH
+    const before = finalLabels.slice();
+    let localFlipped = 0;
+    for (let y = 0; y < CAM_H; y++) {
+      for (let x = 0; x < CAM_W; x++) {
+        if (x < EDGE || x >= CAM_W - EDGE) continue;
+        const i = y * CAM_W + x;
+        if (before[i] !== 2 && before[i] !== 3) continue;
+        const gv: number[] = [];
+        const yLo = Math.max(0, y - RADIUS);
+        const yHi = Math.min(CAM_H - 1, y + RADIUS);
+        const xLo = Math.max(0, x - RADIUS);
+        const xHi = Math.min(CAM_W - 1, x + RADIUS);
+        for (let yy = yLo; yy <= yHi; yy++) {
+          for (let xx = xLo; xx <= xHi; xx++) {
+            const k = yy * CAM_W + xx;
+            if (before[k] === 2 || before[k] === 3) gv.push(flatRG[k * 2 + 1]);
+          }
+        }
+        if (gv.length < MIN_WARM) continue;
+        let lo = Infinity, hi = -Infinity;
+        for (const g of gv) { if (g < lo) lo = g; if (g > hi) hi = g; }
+        if (hi - lo < MIN_SPREAD) continue; // uniform warm region — trust global
+        const nb = Math.round(hi - lo) + 1;
+        const hist = new Array<number>(nb).fill(0);
+        for (const g of gv) hist[Math.min(nb - 1, Math.max(0, Math.round(g - lo)))]++;
+        const sm = gaussianFilter1d(hist, Math.max(2, (hi - lo) / 12));
+        // Tallest mode, then the tallest mode separated from it by a dip.
+        let p1 = 0; for (let k = 1; k < nb; k++) if (sm[k] > sm[p1]) p1 = k;
+        let p2 = -1; for (let k = 0; k < nb; k++) {
+          if (Math.abs(k - p1) < (hi - lo) / 6) continue;
+          if (p2 < 0 || sm[k] > sm[p2]) p2 = k;
+        }
+        if (p2 < 0) continue;
+        const a = Math.min(p1, p2), b = Math.max(p1, p2);
+        let valley = a; for (let k = a + 1; k <= b; k++) if (sm[k] < sm[valley]) valley = k;
+        const peakMin = Math.min(sm[p1], sm[p2]);
+        if (peakMin <= 0 || sm[valley] > MIN_DEPTH * peakMin) continue; // not bimodal
+        const upperModeG = lo + b;
+        if (upperModeG < whFloor) continue;        // upper mode not bright enough to be WH
+        const valleyG = lo + valley;
+        const want = flatRG[i * 2 + 1] >= valleyG ? 3 : 2;
+        if (want !== finalLabels[i]) {
+          finalLabels[i] = want;
+          localFlipped++;
+        }
+      }
+    }
+    if (dbg && localFlipped > 0) {
+      dbg.log(`[quantize] local adaptive WH/LG: ${localFlipped} pixels reclassified`);
+    }
+  }
+
+  // ── 3h. Recover sparse DG-on-black dots using the pre-correct warp.
+  // The `correct` step's affine gain amplifies a bleed-lifted DG pixel's R
+  // upward (warp R≈120 → sample R≈190), pushing isolated DG dots across the
+  // DG/LG boundary so they're mis-labelled LG. The PRE-correct warp still
+  // separates DG (low R) from LG (high R) cleanly — that signal is destroyed
+  // downstream. Per-pixel reclassification of these is otherwise impossible
+  // (in the ambiguous band LG outnumbers DG ~1000:1), but a DG dot has THREE
+  // independent signatures at once that a stray LG pixel does not:
+  //   (1) its warp R is closer to the DG mode than the LG mode,
+  //   (2) high B (the DG colour, B≈255 vs LG≈148), and
+  //   (3) it sits on a black background (≥3 BK neighbours — the sparse-dot
+  //       structure; LG lives among warm neighbours, not on black).
+  // Requiring all three keeps false flips to near-zero. All thresholds are
+  // derived from this image's own DG/LG statistics (no magic constants).
+  if (options?.warped) {
+    const wq = options.warped;
+    const sc = options?.scale ?? Math.round(wq.width / SCREEN_W);
+    const m0 = Math.max(1, Math.floor(sc / 4));
+    const m1 = Math.max(m0 + 1, Math.ceil((sc * 3) / 4));
+    // Mean warp R over the inner block of each camera pixel.
+    const warpRcam = new Float32Array(N);
+    for (let cy = 0; cy < CAM_H; cy++) {
+      for (let cx = 0; cx < CAM_W; cx++) {
+        const sx = (cx + FRAME_THICK) * sc;
+        const sy = (cy + FRAME_THICK) * sc;
+        let sum = 0, cnt = 0;
+        for (let yy = sy + m0; yy < sy + m1; yy++) {
+          for (let xx = sx + m0; xx < sx + m1; xx++) {
+            sum += wq.data[(yy * wq.width + xx) * 4];
+            cnt++;
+          }
+        }
+        warpRcam[cy * CAM_W + cx] = cnt > 0 ? sum / cnt : 0;
+      }
+    }
+    // Image-derived warp-R centroids of confidently-labelled DG and LG.
+    let dgSum = 0, dgN = 0, lgSum = 0, lgN = 0;
+    let dgBsum = 0, lgBsum = 0;
+    for (let i = 0; i < N; i++) {
+      if (finalLabels[i] === 1) { dgSum += warpRcam[i]; dgN++; dgBsum += input.data[i * 4 + 2]; }
+      else if (finalLabels[i] === 2) { lgSum += warpRcam[i]; lgN++; lgBsum += input.data[i * 4 + 2]; }
+    }
+    let dotsFixed = 0;
+    if (dgN >= 20 && lgN >= 20) {
+      const warpDgR = dgSum / dgN;
+      const warpLgR = lgSum / lgN;
+      const dgMeanB = dgBsum / dgN;
+      const lgMeanB = lgBsum / lgN;
+      // Only meaningful when the warp actually separates DG from LG in R and
+      // DG carries distinctly higher B than LG.
+      if (warpLgR - warpDgR > 40 && dgMeanB - lgMeanB > 20) {
+        // Warp-R cut at the midpoint of the DG/LG warp centroids = classify
+        // by nearest warp centroid (the natural boundary in the clean
+        // pre-correct space). BK-neighbour floor of 3 keeps false flips ~zero.
+        const FRAC = 0.5;
+        const BKMIN = 3;
+        const warpCut = warpDgR + (warpLgR - warpDgR) * FRAC;
+        const bCut = (dgMeanB + lgMeanB) / 2;
+        for (let cy = 0; cy < CAM_H; cy++) {
+          for (let cx = 0; cx < CAM_W; cx++) {
+            const i = cy * CAM_W + cx;
+            if (finalLabels[i] !== 2) continue;            // only output-LG
+            if (warpRcam[i] >= warpCut) continue;          // (1) warp R clearly DG
+            if (input.data[i * 4 + 2] <= bCut) continue;   // (2) high B (DG)
+            let bk = 0;                                      // (3) on black bg
+            for (let dy = -1; dy <= 1; dy++) {
+              for (let dx = -1; dx <= 1; dx++) {
+                if (!dx && !dy) continue;
+                const yy = cy + dy, xx = cx + dx;
+                if (yy < 0 || xx < 0 || yy >= CAM_H || xx >= CAM_W) continue;
+                if (finalLabels[yy * CAM_W + xx] === 0) bk++;
+              }
+            }
+            if (bk < BKMIN) continue;
+            finalLabels[i] = 1;
+            dotsFixed++;
+          }
+        }
+      }
+    }
+    if (dbg && dotsFixed > 0) {
+      dbg.log(`[quantize] warp-R DG-dot recovery: ${dotsFixed} pixels reclassified`);
     }
   }
 
@@ -534,13 +1228,29 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
       ]),
       stripEnsemble: { strips: nStrips, changed: stripChanged },
       valleyRefinement: {
-        threshold: valleyThreshold === null ? null : Number(valleyThreshold.toFixed(2)),
+        threshold:
+          valleyThreshold === null ? null : Number(valleyThreshold.toFixed(2)),
         changed: valleyChanged,
       },
       counts: {
-        afterGlobalKmeans: { BK: globalCounts[0], DG: globalCounts[1], LG: globalCounts[2], WH: globalCounts[3] },
-        afterStripEnsemble: { BK: stripCounts[0], DG: stripCounts[1], LG: stripCounts[2], WH: stripCounts[3] },
-        final: { BK: finalCounts[0], DG: finalCounts[1], LG: finalCounts[2], WH: finalCounts[3] },
+        afterGlobalKmeans: {
+          BK: globalCounts[0],
+          DG: globalCounts[1],
+          LG: globalCounts[2],
+          WH: globalCounts[3],
+        },
+        afterStripEnsemble: {
+          BK: stripCounts[0],
+          DG: stripCounts[1],
+          LG: stripCounts[2],
+          WH: stripCounts[3],
+        },
+        final: {
+          BK: finalCounts[0],
+          DG: finalCounts[1],
+          LG: finalCounts[2],
+          WH: finalCounts[3],
+        },
       },
     });
 
@@ -600,11 +1310,156 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
 }
 
 /** Count occurrences of palette indices 0..3 in a label array. */
-function countLabels(labels: Int32Array | Uint8Array): [number, number, number, number] {
+function countLabels(
+  labels: Int32Array | Uint8Array,
+): [number, number, number, number] {
   const c: [number, number, number, number] = [0, 0, 0, 0];
   for (let i = 0; i < labels.length; i++) {
     const v = labels[i];
     if (v >= 0 && v < 4) c[v]++;
   }
   return c;
+}
+
+/**
+ * Frame-aware quantize: uses palette anchors extracted from the frame to fit
+ * per-color RGB surfaces, then classifies each camera pixel by nearest
+ * predicted color at its frame location.
+ */
+function frameAwareQuantize(
+  input: GBImageData,
+  warped: GBImageData,
+  scale: number,
+  dbg?: DebugCollector,
+): GBImageData {
+  const N = CAM_W * CAM_H;
+  // k-NN in (y, x, R, G, B) space against all frame anchors. For each camera
+  // pixel, find K nearest anchors and vote (weighted by 1/(1+d)) for the
+  // colour. Position similarity uses nearby-gradient anchors; colour
+  // similarity uses similar-RGB anchors. Avoids polynomial extrapolation
+  // because predictions are always over actual observed samples.
+  const anchors = collectFrameAnchors(warped, scale);
+  const cls = buildFrameClassifier(warped, scale, 2);
+  const labels = new Uint8Array(N);
+  const SPATIAL_W = 0.05;
+  const K = 5;
+  for (let cy = 0; cy < CAM_H; cy++) {
+    for (let cx = 0; cx < CAM_W; cx++) {
+      const i = cy * CAM_W + cx;
+      const R = input.data[i * 4];
+      const G = input.data[i * 4 + 1];
+      const B = input.data[i * 4 + 2];
+      const { frameY, frameX } = cameraToFrameCoords(cy, cx);
+      const bestD = new Array<number>(K).fill(Infinity);
+      const bestC = new Array<number>(K).fill(-1);
+      for (let ai = 0; ai < anchors.length; ai++) {
+        const a = anchors[ai];
+        const dy = frameY - a.y;
+        const dx = frameX - a.x;
+        const dR = R - a.R;
+        const dG = G - a.G;
+        const dB = B - a.B;
+        const d = SPATIAL_W * (dy * dy + dx * dx) + dR * dR + dG * dG + dB * dB;
+        for (let k = 0; k < K; k++) {
+          if (d < bestD[k]) {
+            for (let m = K - 1; m > k; m--) {
+              bestD[m] = bestD[m - 1];
+              bestC[m] = bestC[m - 1];
+            }
+            bestD[k] = d;
+            bestC[k] = a.c;
+            break;
+          }
+        }
+      }
+      const votes = [0, 0, 0, 0];
+      for (let k = 0; k < K; k++) {
+        if (bestC[k] < 0) continue;
+        const w = 1 / (1 + bestD[k]);
+        votes[bestC[k]] += w;
+      }
+      let bestColor = 0;
+      let bestVote = -1;
+      for (let c = 0; c < 4; c++) {
+        if (votes[c] > bestVote) {
+          bestVote = votes[c];
+          bestColor = c;
+        }
+      }
+      labels[i] = bestColor;
+    }
+  }
+  const output = createGBImageData(CAM_W, CAM_H);
+  for (let i = 0; i < N; i++) {
+    const v = GB_COLORS[labels[i]];
+    const j = i * 4;
+    output.data[j] = v;
+    output.data[j + 1] = v;
+    output.data[j + 2] = v;
+    output.data[j + 3] = 255;
+  }
+
+  if (dbg) {
+    const counts = countLabels(labels);
+    dbg.log(
+      `[quantize] frame-aware: anchor samples ` +
+        `BK=${cls.sampleCounts[0]} DG=${cls.sampleCounts[1]} ` +
+        `LG=${cls.sampleCounts[2]} WH=${cls.sampleCounts[3]}`,
+    );
+    dbg.log(
+      `[quantize] frame-aware means: ` +
+        ["BK", "DG", "LG", "WH"]
+          .map(
+            (n, c) =>
+              `${n}=(R${cls.meanR[c].toFixed(0)},G${cls.meanG[c].toFixed(0)},B${cls.meanB[c].toFixed(0)})`,
+          )
+          .join("  "),
+    );
+    // Predicted RGB at three frame positions (TL, center, BR of camera region)
+    const PROBES = [
+      { name: "TL", fy: 20, fx: 20 },
+      { name: "MID", fy: 72, fx: 80 },
+      { name: "BR", fy: 124, fx: 140 },
+    ];
+    for (const p of PROBES) {
+      const idx = p.fy * cls.W + p.fx;
+      const txt = ["BK", "DG", "LG", "WH"]
+        .map(
+          (n, c) =>
+            `${n}=(R${cls.R[c][idx].toFixed(0)},G${cls.G[c][idx].toFixed(0)},B${cls.B[c][idx].toFixed(0)})`,
+        )
+        .join(" ");
+      dbg.log(
+        `[quantize] frame-aware probe ${p.name}@(${p.fy},${p.fx}): ${txt}`,
+      );
+    }
+    dbg.log(
+      `[quantize] frame-aware final: ` +
+        ["BK", "DG", "LG", "WH"]
+          .map(
+            (n, i) =>
+              `${n}=${counts[i]} (${((100 * counts[i]) / N).toFixed(1)}%)`,
+          )
+          .join("  "),
+    );
+    dbg.addImage("quantize_a_gray_8x", upscale(output, 8));
+    const rgbOut = createGBImageData(CAM_W, CAM_H);
+    const PALETTE_RGB: [number, number, number][] = [
+      [0, 0, 0],
+      [148, 148, 255],
+      [255, 148, 148],
+      [255, 255, 165],
+    ];
+    for (let i = 0; i < N; i++) {
+      const c = PALETTE_RGB[labels[i]];
+      const j = i * 4;
+      rgbOut.data[j] = c[0];
+      rgbOut.data[j + 1] = c[1];
+      rgbOut.data[j + 2] = c[2];
+      rgbOut.data[j + 3] = 255;
+    }
+    dbg.addImage("quantize_b_rgb_8x", upscale(rgbOut, 8));
+  }
+
+  return output;
 }

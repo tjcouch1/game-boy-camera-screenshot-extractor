@@ -1,6 +1,10 @@
 import { useCallback } from "react";
 import { useLocalStorage } from "./useLocalStorage.js";
 import type { PaletteEntry } from "../data/palettes.js";
+import {
+  type FrameSelection,
+  FRAME_SELECTION_NONE,
+} from "../types/frame-selection.js";
 
 const STORAGE_KEY = "gbcam-app-settings";
 
@@ -10,6 +14,7 @@ export interface AppSettings {
   outputScale: number;
   previewScale: number;
   paletteSelection?: PaletteEntry;
+  defaultFrame?: FrameSelection;
 }
 
 const DEFAULTS: AppSettings = {
@@ -17,6 +22,7 @@ const DEFAULTS: AppSettings = {
   clipboardEnabled: false,
   outputScale: 1,
   previewScale: 2,
+  defaultFrame: FRAME_SELECTION_NONE,
 };
 
 export function useAppSettings() {

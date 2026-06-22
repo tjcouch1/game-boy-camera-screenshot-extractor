@@ -10,13 +10,7 @@
  */
 
 import { resolve, join, basename, extname, relative } from "path";
-import {
-  existsSync,
-  mkdirSync,
-  readdirSync,
-  writeFileSync,
-  readFileSync,
-} from "fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "fs";
 import sharp from "sharp";
 import { initOpenCV } from "../src/init-opencv.js";
 import { processPicture } from "../src/index.js";
@@ -42,8 +36,20 @@ const SAMPLE_PICTURES_DIR = join(REPO_ROOT, "sample-pictures");
 const SAMPLE_PICTURES_OUT = join(REPO_ROOT, "sample-pictures-out");
 const TEST_INPUT_DIR = join(REPO_ROOT, "test-input");
 const TEST_OUTPUT_DIR = join(REPO_ROOT, "test-output");
+const TEST_INPUT_FULL_DIR = join(REPO_ROOT, "test-input-full");
+const TEST_OUTPUT_FULL_DIR = join(REPO_ROOT, "test-output-full");
+const SAMPLE_PICTURES_FULL_DIR = join(REPO_ROOT, "sample-pictures-full");
+const SAMPLE_PICTURES_OUT_FULL = join(REPO_ROOT, "sample-pictures-out-full");
+const SAMPLE_PICTURES_PRIVATE_DIR = join(REPO_ROOT, "sample-pictures-private");
+const SAMPLE_PICTURES_OUT_PRIVATE = join(
+  REPO_ROOT,
+  "sample-pictures-out-private",
+);
+const TEST_INPUT_PRIVATE_DIR = join(REPO_ROOT, "test-input-private");
+const TEST_OUTPUT_PRIVATE_DIR = join(REPO_ROOT, "test-output-private");
 const REFERENCE_SUFFIX = "-output-corrected.png";
-const SUMMARY_LOG = join(TEST_OUTPUT_DIR, "test-summary.log");
+
+const DEFAULT_SCALE = 8;
 
 // ─── Color constants ───
 
@@ -65,7 +71,11 @@ const RGBA_PALETTE: Record<number, [number, number, number, number]> = {
 // ─── Image helpers ───
 
 async function loadImage(filePath: string): Promise<GBImageData> {
-  const img = sharp(filePath).removeAlpha().ensureAlpha();
+  // Auto-orient: applies any EXIF rotation so loaded pixels match visual
+  // orientation. Phone photos in test-input-full/ may store landscape
+  // images with EXIF rotation; locate's detection runs in pixel-storage
+  // coords, so without this it sees a flipped image.
+  const img = sharp(filePath).rotate().removeAlpha().ensureAlpha();
   const { data, info } = await img.raw().toBuffer({ resolveWithObject: true });
 
   const rgba = new Uint8ClampedArray(info.width * info.height * 4);
@@ -79,10 +89,7 @@ async function loadImage(filePath: string): Promise<GBImageData> {
   return { data: rgba, width: info.width, height: info.height };
 }
 
-async function saveImage(
-  img: GBImageData,
-  outPath: string
-): Promise<void> {
+async function saveImage(img: GBImageData, outPath: string): Promise<void> {
   const dir = resolve(outPath, "..");
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
   await sharp(Buffer.from(img.data.buffer), {
@@ -101,7 +108,7 @@ async function loadReference(filePath: string): Promise<Uint8Array> {
 
   if (info.width !== CAM_W || info.height !== CAM_H) {
     throw new Error(
-      `Reference image is ${info.width}x${info.height}, expected ${CAM_W}x${CAM_H}`
+      `Reference image is ${info.width}x${info.height}, expected ${CAM_W}x${CAM_H}`,
     );
   }
 
@@ -160,7 +167,7 @@ function compare(
   reference: Uint8Array,
   outputDir: string,
   stem: string,
-  log: (msg: string) => void
+  log: (msg: string) => void,
 ): ComparisonResult {
   const total = result.length;
   let matches = 0;
@@ -183,7 +190,7 @@ function compare(
   log("COLOR DISTRIBUTION");
   log("-".repeat(70));
   log(
-    `  ${"Color".padEnd(22)}  ${"Result".padStart(8)}  ${"Reference".padStart(10)}  ${"Diff".padStart(8)}`
+    `  ${"Color".padEnd(22)}  ${"Result".padStart(8)}  ${"Reference".padStart(10)}  ${"Diff".padStart(8)}`,
   );
   for (const v of GB_COLORS) {
     let rCnt = 0,
@@ -194,7 +201,7 @@ function compare(
     }
     const diff = rCnt - gCnt;
     log(
-      `  ${COLOR_NAMES[v].padEnd(22)}  ${String(rCnt).padStart(8)}  ${String(gCnt).padStart(10)}  ${(diff >= 0 ? "+" : "") + diff}`
+      `  ${COLOR_NAMES[v].padEnd(22)}  ${String(rCnt).padStart(8)}  ${String(gCnt).padStart(10)}  ${(diff >= 0 ? "+" : "") + diff}`,
     );
   }
 
@@ -275,11 +282,12 @@ async function saveErrorMap(
   result: Uint8Array,
   reference: Uint8Array,
   outputDir: string,
-  stem: string
+  stem: string,
+  scale: number = 1,
+  suffix: string = "",
 ): Promise<void> {
   const w = CAM_W;
   const h = CAM_H;
-  const scale = 4;
   const outW = w * scale;
   const outH = h * scale;
   const buf = Buffer.alloc(outW * outH * 4);
@@ -313,7 +321,7 @@ async function saveErrorMap(
     }
   }
 
-  const outPath = join(outputDir, `${stem}_diag_error_map.png`);
+  const outPath = join(outputDir, `${stem}_diag_error_map${suffix}.png`);
   await sharp(buf, { raw: { width: outW, height: outH, channels: 4 } })
     .png()
     .toFile(outPath);
@@ -323,7 +331,7 @@ async function saveErrorMap(
 async function savePaletteImage(
   gray: Uint8Array,
   outputDir: string,
-  filename: string
+  filename: string,
 ): Promise<void> {
   const w = CAM_W;
   const h = CAM_H;
@@ -356,44 +364,222 @@ async function savePaletteImage(
     .toFile(outPath);
 }
 
-// ─── Pipeline runner ───
+// ─── Corpus config ───
 
-interface PipelineRunResult {
-  grayscale: GBImageData;
-  /** Per-step diagnostic log lines (empty if debug was off). */
-  debugLog: string[];
+interface CorpusConfig {
+  /** Human-readable name shown in summary logs. */
+  name: string;
+  /** Absolute path to the input directory. */
+  inputDir: string;
+  /** Absolute path to the output directory. */
+  outputDir: string;
+  /**
+   * Comparison mode:
+   *  - "reference":   compare against hand-corrected refs in test-input/
+   *                   (uses `<baseName>-output-corrected.png`)
+   *  - "self":        compare against `referenceFromOutputDir`'s outputs
+   *  - "none":        no comparison (extraction only)
+   */
+  comparison: "reference" | "self" | "none";
+  /** When comparison === "self", which output dir to read references from. */
+  referenceFromOutputDir?: string;
 }
 
-async function runPipeline(
-  inputPath: string,
-  outputDir: string,
-  stem: string,
-  scale: number = 8
-): Promise<PipelineRunResult> {
-  const input = await loadImage(inputPath);
-  const result = await processPicture(input, {
-    scale,
-    debug: true,
-    onProgress: (step, pct) => {
-      if (pct === 0) process.stdout.write(`  ${step}...`);
-      if (pct === 100) process.stdout.write(" done\n");
-    },
-  });
+/**
+ * Collect input files for a corpus. Includes .jpg/.jpeg/.png; skips reference
+ * images (those ending in `-output-corrected.png`).
+ */
+function collectCorpusInputs(inputDir: string): string[] {
+  if (!existsSync(inputDir)) return [];
+  const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png"]);
+  return readdirSync(inputDir)
+    .filter((f) => {
+      if (f.endsWith(REFERENCE_SUFFIX)) return false;
+      return IMAGE_EXTS.has(extname(f).toLowerCase());
+    })
+    .sort()
+    .map((f) => join(inputDir, f));
+}
 
-  // Save final output
-  const outPath = join(outputDir, `${stem}_gbcam.png`);
-  await saveImage(result.grayscale, outPath);
+/** Find the reference path for an input photo, or null if none. */
+function findReferenceFor(inputStem: string, inputDir: string): string | null {
+  // The reference uses the *base name* (e.g. "thing" or "zelda-poster"),
+  // derived by stripping the trailing "-<number>" off the input stem.
+  const m = inputStem.match(/^(.*)-\d+$/);
+  if (!m) return null;
+  const baseName = m[1];
+  const refPath = join(inputDir, `${baseName}${REFERENCE_SUFFIX}`);
+  if (!existsSync(refPath)) return null;
+  return refPath;
+}
 
-  // Save palette-rendered ("Down" palette) RGB version
-  const rgb = applyPalette(result.grayscale, DOWN_PALETTE);
-  await saveImage(rgb, join(outputDir, `${stem}_gbcam_rgb.png`));
+/**
+ * Run every input in a corpus through the pipeline. Returns the per-image
+ * test results (used for the final summary).
+ */
+async function runCorpus(config: CorpusConfig): Promise<TestResult[]> {
+  const inputs = collectCorpusInputs(config.inputDir);
+  if (inputs.length === 0) {
+    console.log(`[${config.name}] no inputs found in ${config.inputDir}`);
+    return [];
+  }
 
-  await writeDebugArtifacts(result, outputDir, stem);
+  if (!existsSync(config.outputDir))
+    mkdirSync(config.outputDir, { recursive: true });
 
-  return {
-    grayscale: result.grayscale,
-    debugLog: result.debug?.log ?? [],
-  };
+  console.log(`\n${"=".repeat(70)}`);
+  console.log(`CORPUS: ${config.name}  (${inputs.length} file(s))`);
+  console.log("=".repeat(70));
+
+  const results: TestResult[] = [];
+  for (const inputPath of inputs) {
+    const inputFilename = basename(inputPath);
+    const stem = basename(inputPath, extname(inputPath));
+
+    let perImageOutDir: string;
+    if (config.comparison === "reference" || config.comparison === "self") {
+      perImageOutDir = join(config.outputDir, stem);
+      if (!existsSync(perImageOutDir))
+        mkdirSync(perImageOutDir, { recursive: true });
+    } else {
+      perImageOutDir = config.outputDir;
+    }
+
+    console.log(`\n  [${config.name}] ${inputFilename}`);
+
+    const logPath = join(perImageOutDir, `${stem}.log`);
+    const logLines: string[] = [];
+    const log = (msg: string) => {
+      console.log(msg);
+      logLines.push(msg);
+    };
+
+    try {
+      log(`PIPELINE RUN`);
+      log(`  Input:      ${relative(REPO_ROOT, inputPath)}`);
+      log(`  Output dir: ${relative(REPO_ROOT, perImageOutDir)}`);
+
+      const input = await loadImage(inputPath);
+      const result = await processPicture(input, {
+        scale: DEFAULT_SCALE,
+        debug: true,
+        locate: true,
+        onProgress: (step, pct) => {
+          if (pct === 0) process.stdout.write(`    ${step}...`);
+          if (pct === 100) process.stdout.write(" done\n");
+        },
+      });
+
+      await saveImage(
+        result.grayscale,
+        join(perImageOutDir, `${stem}_gbcam.png`),
+      );
+      const rgb = applyPalette(result.grayscale, DOWN_PALETTE);
+      await saveImage(rgb, join(perImageOutDir, `${stem}_gbcam_rgb.png`));
+      await writeDebugArtifacts(result, perImageOutDir, stem);
+
+      if (result.debug?.log.length) {
+        log(`\nPIPELINE DIAGNOSTICS`);
+        for (const line of result.debug.log) log(`  ${line}`);
+      }
+
+      // ── Comparison ──
+      if (config.comparison === "none") {
+        results.push({
+          name: stem,
+          matchN: null,
+          matchPct: null,
+          diffN: null,
+          diffPct: null,
+          verdict: "OK",
+        });
+        writeFileSync(logPath, logLines.join("\n") + "\n", "utf-8");
+        continue;
+      }
+
+      // Resolve reference path
+      let refPath: string | null;
+      if (config.comparison === "reference") {
+        refPath = findReferenceFor(stem, config.inputDir);
+      } else {
+        // "self": reference is `<referenceFromOutputDir>/<stem>_gbcam.png`
+        // for flat corpora (sample-pictures-out is flat), or
+        // `<referenceFromOutputDir>/<stem>/<stem>_gbcam.png` for per-image-dir
+        // corpora.
+        const flat = join(config.referenceFromOutputDir!, `${stem}_gbcam.png`);
+        const nested = join(
+          config.referenceFromOutputDir!,
+          stem,
+          `${stem}_gbcam.png`,
+        );
+        refPath = existsSync(flat) ? flat : existsSync(nested) ? nested : null;
+      }
+
+      if (!refPath) {
+        log(`\n  No reference image found — skipping comparison.`);
+        results.push({
+          name: stem,
+          matchN: null,
+          matchPct: null,
+          diffN: null,
+          diffPct: null,
+          verdict: "NO REF",
+        });
+        writeFileSync(logPath, logLines.join("\n") + "\n", "utf-8");
+        continue;
+      }
+
+      const resultGray = extractGrayscale(result.grayscale);
+      const referenceGray = await loadReference(refPath);
+
+      const cmp = compare(resultGray, referenceGray, perImageOutDir, stem, log);
+
+      const debugDir = join(perImageOutDir, "debug");
+      if (!existsSync(debugDir)) mkdirSync(debugDir, { recursive: true });
+      await saveErrorMap(resultGray, referenceGray, debugDir, stem, 1);
+      await saveErrorMap(
+        resultGray,
+        referenceGray,
+        debugDir,
+        stem,
+        DEFAULT_SCALE,
+        "_scaled",
+      );
+      await savePaletteImage(resultGray, debugDir, `${stem}_diag_result.png`);
+      await savePaletteImage(
+        referenceGray,
+        debugDir,
+        `${stem}_diag_reference.png`,
+      );
+
+      writeFileSync(logPath, logLines.join("\n") + "\n", "utf-8");
+
+      results.push({
+        name: stem,
+        matchN: cmp.matches,
+        matchPct: cmp.matchPct,
+        diffN: cmp.wrongs,
+        diffPct: cmp.wrongPct,
+        verdict: cmp.passed ? "PASS" : "FAIL",
+      });
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`  ERROR: ${msg}`);
+      if (err instanceof Error) console.error(err.stack);
+      logLines.push(`PIPELINE ERROR: ${msg}`);
+      writeFileSync(logPath, logLines.join("\n") + "\n", "utf-8");
+      results.push({
+        name: stem,
+        matchN: null,
+        matchPct: null,
+        diffN: null,
+        diffPct: null,
+        verdict: "ERROR",
+      });
+    }
+  }
+
+  return results;
 }
 
 /**
@@ -412,7 +598,7 @@ async function writeDebugArtifacts(
     };
   },
   outputDir: string,
-  stem: string
+  stem: string,
 ): Promise<void> {
   if (!result.intermediates && !result.debug) return;
   const debugDir = join(outputDir, "debug");
@@ -434,14 +620,14 @@ async function writeDebugArtifacts(
       JSON.stringify(
         { metrics: result.debug.metrics, log: result.debug.log },
         null,
-        2
+        2,
       ),
-      "utf-8"
+      "utf-8",
     );
   }
 }
 
-// ─── Log parsing ───
+// ─── Test result shape ───
 
 interface TestResult {
   name: string;
@@ -452,276 +638,190 @@ interface TestResult {
   verdict: string;
 }
 
-function parseTestLog(logPath: string): Omit<TestResult, "name"> {
-  if (!existsSync(logPath)) {
-    return {
-      matchN: null,
-      matchPct: null,
-      diffN: null,
-      diffPct: null,
-      verdict: "NO LOG",
-    };
-  }
-
-  const text = readFileSync(logPath, "utf-8");
-
-  function extract(label: string): [number | null, number | null] {
-    const m = text.match(new RegExp(`${label}\\s*:\\s*(\\d+)\\s*\\(\\s*([\\d.]+)%\\)`));
-    if (m) return [parseInt(m[1], 10), parseFloat(m[2])];
-    return [null, null];
-  }
-
-  const [matchN, matchPct] = extract("Matching");
-  const [diffN, diffPct] = extract("Different");
-
-  let verdict = "UNKNOWN";
-  if (/RESULT:\s*PASS/.test(text)) verdict = "PASS";
-  else if (/RESULT:\s*FAIL/.test(text)) verdict = "FAIL";
-
-  return { matchN, matchPct, diffN, diffPct, verdict };
-}
-
 // ─── Summary ───
 
-function writeSummary(
-  sampleExit: boolean,
-  testResults: TestResult[]
-): void {
+function writeCorpusSummary(corpus: CorpusConfig, results: TestResult[]): void {
   const lines: string[] = [];
-  lines.push("=".repeat(60));
-  lines.push("TEST SUMMARY");
-  lines.push("=".repeat(60));
-  lines.push("");
+  lines.push("=".repeat(70));
+  lines.push(`CORPUS SUMMARY — ${corpus.name}`);
+  lines.push(`  inputDir:   ${relative(REPO_ROOT, corpus.inputDir)}`);
+  lines.push(`  outputDir:  ${relative(REPO_ROOT, corpus.outputDir)}`);
   lines.push(
-    `  sample extraction : ${sampleExit ? "OK" : "FAILED"}`
+    `  comparison: ${corpus.comparison}` +
+      (corpus.referenceFromOutputDir
+        ? `  (referenceFromOutputDir: ${relative(REPO_ROOT, corpus.referenceFromOutputDir)})`
+        : ""),
   );
+  lines.push("=".repeat(70));
   lines.push("");
 
-  if (testResults.length > 0) {
-    const colW = Math.max(...testResults.map((r) => r.name.length));
+  if (results.length === 0) {
+    lines.push("  (no inputs found)");
+  } else {
+    const colW = Math.max(...results.map((r) => r.name.length));
     const header = `  ${"Test".padEnd(colW)}   ${"Matching".padEnd(18)}  ${"Different".padEnd(18)}  Verdict`;
     lines.push(header);
     lines.push("  " + "-".repeat(header.length - 2));
-
-    for (const r of testResults) {
+    for (const r of results) {
       const fmt = (n: number | null, pct: number | null): string => {
         if (n === null) return "       N/A       ";
         return `${String(n).padStart(5)} (${pct!.toFixed(2).padStart(6)}%)`;
       };
       lines.push(
-        `  ${r.name.padEnd(colW)}   ${fmt(r.matchN, r.matchPct)}   ${fmt(r.diffN, r.diffPct)}   ${r.verdict}`
+        `  ${r.name.padEnd(colW)}   ${fmt(r.matchN, r.matchPct)}   ${fmt(r.diffN, r.diffPct)}   ${r.verdict}`,
       );
     }
-
     lines.push("");
-    const passed = testResults.filter((r) => r.verdict === "PASS").length;
-    lines.push(`  ${passed}/${testResults.length} passed`);
+    const passed = results.filter((r) => r.verdict === "PASS").length;
+    const total = results.filter((r) => r.verdict !== "OK").length;
+    if (total > 0) lines.push(`  ${passed}/${total} passed`);
   }
 
   lines.push("");
-  lines.push("=".repeat(60));
-
   const text = lines.join("\n") + "\n";
   console.log("\n" + text);
 
-  if (!existsSync(TEST_OUTPUT_DIR)) mkdirSync(TEST_OUTPUT_DIR, { recursive: true });
-  writeFileSync(SUMMARY_LOG, text, "utf-8");
-  console.log(`Summary written to ${SUMMARY_LOG}`);
+  if (!existsSync(corpus.outputDir))
+    mkdirSync(corpus.outputDir, { recursive: true });
+  writeFileSync(join(corpus.outputDir, "test-summary.log"), text, "utf-8");
+}
+
+// ─── Corpus catalogs ───
+//
+// Two test-run modes are supported, each running a different subset of
+// corpora. Both share `runCorpus` etc. above.
+//
+// `quick` (default) — focused day-to-day validation: just test-input and
+// test-input-full extraction. Skips the tier-2 self-consistency corpora.
+//
+// `full` — every corpus, in dependency order.
+
+/** Corpora used by `pnpm test:pipeline` (the quick day-to-day run). */
+function quickCorpora(): CorpusConfig[] {
+  const corpora: CorpusConfig[] = [
+    {
+      name: "test-input",
+      inputDir: TEST_INPUT_DIR,
+      outputDir: TEST_OUTPUT_DIR,
+      comparison: "reference",
+    },
+    {
+      name: "test-input-full",
+      inputDir: TEST_INPUT_FULL_DIR,
+      outputDir: TEST_OUTPUT_FULL_DIR,
+      comparison: "reference",
+    },
+  ];
+
+  if (existsSync(TEST_INPUT_PRIVATE_DIR)) {
+    corpora.push({
+      name: "test-input-private",
+      inputDir: TEST_INPUT_PRIVATE_DIR,
+      outputDir: TEST_OUTPUT_PRIVATE_DIR,
+      comparison: "reference",
+    });
+  }
+
+  return corpora;
+}
+
+/** All corpora used by `pnpm test:pipeline:all`. */
+function allCorpora(): CorpusConfig[] {
+  const corpora: CorpusConfig[] = [
+    {
+      name: "sample-pictures",
+      inputDir: SAMPLE_PICTURES_DIR,
+      outputDir: SAMPLE_PICTURES_OUT,
+      comparison: "none",
+    },
+    {
+      name: "test-input",
+      inputDir: TEST_INPUT_DIR,
+      outputDir: TEST_OUTPUT_DIR,
+      comparison: "reference",
+    },
+    {
+      name: "test-input-full",
+      inputDir: TEST_INPUT_FULL_DIR,
+      outputDir: TEST_OUTPUT_FULL_DIR,
+      comparison: "reference",
+    },
+    {
+      name: "sample-pictures-full [self-consistency]",
+      inputDir: SAMPLE_PICTURES_FULL_DIR,
+      outputDir: SAMPLE_PICTURES_OUT_FULL,
+      comparison: "self",
+      referenceFromOutputDir: SAMPLE_PICTURES_OUT,
+    },
+  ];
+
+  if (existsSync(SAMPLE_PICTURES_PRIVATE_DIR)) {
+    corpora.push({
+      name: "sample-pictures-private",
+      inputDir: SAMPLE_PICTURES_PRIVATE_DIR,
+      outputDir: SAMPLE_PICTURES_OUT_PRIVATE,
+      comparison: "none",
+    });
+  }
+
+  if (existsSync(TEST_INPUT_PRIVATE_DIR)) {
+    corpora.push({
+      name: "test-input-private",
+      inputDir: TEST_INPUT_PRIVATE_DIR,
+      outputDir: TEST_OUTPUT_PRIVATE_DIR,
+      comparison: "reference",
+    });
+  }
+
+  return corpora;
 }
 
 // ─── Main ───
 
 async function main() {
+  // Parse mode from CLI args (default: quick).
+  const argv = process.argv.slice(2);
+  let mode: "quick" | "all" = "quick";
+  for (const arg of argv) {
+    if (arg === "--mode=quick" || arg === "--quick") mode = "quick";
+    else if (arg === "--mode=all" || arg === "--all") mode = "all";
+    else if (arg === "--help" || arg === "-h") {
+      console.log(
+        "Usage: run-tests [--mode=quick|all]\n" +
+          "  --mode=quick  Run test-input + test-input-full (default)\n" +
+          "  --mode=all    Run all corpora",
+      );
+      return;
+    }
+  }
+
   console.log("Initializing OpenCV...");
   await initOpenCV();
-  console.log("OpenCV ready.\n");
-
-  let sampleSuccess = true;
-  const testResults: TestResult[] = [];
-
-  // ── 1. Run sample pictures ──
-  if (existsSync(SAMPLE_PICTURES_DIR)) {
-    const IMAGE_EXTS = new Set([".jpg", ".jpeg", ".png"]);
-    const sampleFiles = readdirSync(SAMPLE_PICTURES_DIR)
-      .filter((f) => IMAGE_EXTS.has(extname(f).toLowerCase()))
-      .map((f) => join(SAMPLE_PICTURES_DIR, f))
-      .sort();
-
-    if (sampleFiles.length > 0) {
-      console.log(`\n${"=".repeat(70)}`);
-      console.log(`SAMPLE PICTURES: ${sampleFiles.length} file(s)`);
-      console.log("=".repeat(70));
-
-      if (!existsSync(SAMPLE_PICTURES_OUT))
-        mkdirSync(SAMPLE_PICTURES_OUT, { recursive: true });
-
-      for (const inputPath of sampleFiles) {
-        const stem = basename(inputPath, extname(inputPath));
-        console.log(`\n  Processing: ${basename(inputPath)}`);
-        try {
-          const input = await loadImage(inputPath);
-          const result = await processPicture(input, {
-            scale: 8,
-            debug: true,
-            onProgress: (step, pct) => {
-              if (pct === 0) process.stdout.write(`    ${step}...`);
-              if (pct === 100) process.stdout.write(" done\n");
-            },
-          });
-          await saveImage(
-            result.grayscale,
-            join(SAMPLE_PICTURES_OUT, `${stem}_gbcam.png`)
-          );
-
-          const rgb = applyPalette(result.grayscale, DOWN_PALETTE);
-          await saveImage(
-            rgb,
-            join(SAMPLE_PICTURES_OUT, `${stem}_gbcam_rgb.png`)
-          );
-
-          await writeDebugArtifacts(result, SAMPLE_PICTURES_OUT, stem);
-        } catch (err) {
-          console.error(
-            `  ERROR: ${err instanceof Error ? err.message : String(err)}`
-          );
-          sampleSuccess = false;
-        }
-      }
-    }
-  } else {
-    console.log(`Sample pictures directory not found: ${SAMPLE_PICTURES_DIR}`);
-  }
-
-  // ── 2. Run test cases ──
-  if (existsSync(TEST_INPUT_DIR)) {
-    const allFiles = readdirSync(TEST_INPUT_DIR);
-    const referenceFiles = allFiles
-      .filter((f) => f.endsWith(REFERENCE_SUFFIX))
-      .sort();
-
-    for (const refFilename of referenceFiles) {
-      const baseName = refFilename.slice(0, -REFERENCE_SUFFIX.length);
-      const refPath = join(TEST_INPUT_DIR, refFilename);
-
-      // Find all numbered input images for this base name
-      const inputFiles = allFiles
-        .filter((f) => {
-          if (f === refFilename) return false;
-          const ext = extname(f).toLowerCase();
-          if (ext !== ".jpg" && ext !== ".jpeg" && ext !== ".png") return false;
-          // Match pattern: baseName-<number>.<ext>
-          const stem = basename(f, extname(f));
-          return stem.startsWith(baseName + "-") && /\d+$/.test(stem);
-        })
-        .sort()
-        .map((f) => join(TEST_INPUT_DIR, f));
-
-      for (const inputPath of inputFiles) {
-        const inputFilename = basename(inputPath);
-        const stem = basename(inputPath, extname(inputPath));
-        const outputDir = join(TEST_OUTPUT_DIR, stem);
-
-        console.log(`\n${"=".repeat(70)}`);
-        console.log(`TEST: ${inputFilename}`);
-        console.log(`  Reference: ${refFilename}`);
-        console.log("=".repeat(70));
-
-        if (!existsSync(outputDir)) mkdirSync(outputDir, { recursive: true });
-
-        // Set up log file
-        const logPath = join(outputDir, `${stem}.log`);
-        const logLines: string[] = [];
-        const log = (msg: string) => {
-          console.log(msg);
-          logLines.push(msg);
-        };
-
-        try {
-          log(`\nPIPELINE RUN`);
-          log(`  Input:      ${relative(REPO_ROOT, inputPath)}`);
-          log(`  Output dir: ${relative(REPO_ROOT, outputDir)}`);
-
-          const pipelineResult = await runPipeline(
-            inputPath,
-            outputDir,
-            stem,
-            8
-          );
-
-          // Echo per-step diagnostic logs into the test log
-          if (pipelineResult.debugLog.length > 0) {
-            log(`\nPIPELINE DIAGNOSTICS`);
-            for (const line of pipelineResult.debugLog) log(`  ${line}`);
-          }
-
-          // Load and compare
-          const resultGray = extractGrayscale(pipelineResult.grayscale);
-          const referenceGray = await loadReference(refPath);
-
-          const cmp = compare(resultGray, referenceGray, outputDir, stem, log);
-
-          // Save diagnostic images
-          await saveErrorMap(resultGray, referenceGray, outputDir, stem);
-          await savePaletteImage(
-            resultGray,
-            outputDir,
-            `${stem}_diag_result.png`
-          );
-          await savePaletteImage(
-            referenceGray,
-            outputDir,
-            `${stem}_diag_reference.png`
-          );
-
-          // Write log
-          writeFileSync(logPath, logLines.join("\n") + "\n", "utf-8");
-          console.log(`  Log written to ${logPath}`);
-
-          testResults.push({
-            name: stem,
-            matchN: cmp.matches,
-            matchPct: cmp.matchPct,
-            diffN: cmp.wrongs,
-            diffPct: cmp.wrongPct,
-            verdict: cmp.passed ? "PASS" : "FAIL",
-          });
-        } catch (err) {
-          console.error(
-            `  PIPELINE ERROR: ${err instanceof Error ? err.message : String(err)}`
-          );
-          if (err instanceof Error) console.error(err.stack);
-
-          // Write error log
-          logLines.push(
-            `PIPELINE ERROR: ${err instanceof Error ? err.message : String(err)}`
-          );
-          writeFileSync(logPath, logLines.join("\n") + "\n", "utf-8");
-
-          testResults.push({
-            name: stem,
-            matchN: null,
-            matchPct: null,
-            diffN: null,
-            diffPct: null,
-            verdict: "ERROR",
-          });
-        }
-      }
-    }
-  } else {
-    console.log(`Test input directory not found: ${TEST_INPUT_DIR}`);
-  }
-
-  // ── 3. Write summary ──
-  writeSummary(sampleSuccess, testResults);
-
-  // Exit with error if any test failed
-  const allPassed = testResults.every(
-    (r) => r.verdict === "PASS"
+  console.log(
+    `OpenCV ready. Running ${mode === "all" ? "ALL" : "QUICK"} corpora.\n`,
   );
-  if (!sampleSuccess || !allPassed) {
-    process.exit(1);
+
+  const corpora = mode === "all" ? allCorpora() : quickCorpora();
+
+  const allResults: { corpus: CorpusConfig; results: TestResult[] }[] = [];
+  let anyError = false;
+
+  for (const corpus of corpora) {
+    const results = await runCorpus(corpus);
+    writeCorpusSummary(corpus, results);
+    allResults.push({ corpus, results });
+    if (results.some((r) => r.verdict === "ERROR")) anyError = true;
   }
+
+  // Top-level fail/pass: existing tier-1 ("reference") corpora must all PASS.
+  // Tier-2 self-consistency corpora are soft signals.
+  let allPassed = true;
+  for (const { corpus, results } of allResults) {
+    if (corpus.comparison !== "reference") continue;
+    if (results.some((r) => r.verdict !== "PASS")) allPassed = false;
+  }
+
+  if (!allPassed || anyError) process.exit(1);
 }
 
 main().catch((err) => {

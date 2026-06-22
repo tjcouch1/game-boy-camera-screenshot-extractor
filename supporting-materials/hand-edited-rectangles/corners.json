@@ -1,0 +1,149 @@
+{
+  "description": "Corner positions of the hand-drawn green rectangle around the Game Boy screen in each *-rectangle.png. Coordinates are in the original image's pixel space (origin at top-left).",
+  "images": {
+    "thing-1": {
+      "imageSize": [
+        4032,
+        1816
+      ],
+      "corners": {
+        "topLeft": [
+          1703.88,
+          268.77
+        ],
+        "topRight": [
+          3032.4,
+          278.96
+        ],
+        "bottomRight": [
+          3023.25,
+          1470.42
+        ],
+        "bottomLeft": [
+          1694.73,
+          1460.23
+        ]
+      }
+    },
+    "thing-2": {
+      "imageSize": [
+        4032,
+        1816
+      ],
+      "corners": {
+        "topLeft": [
+          1614.64,
+          336.62
+        ],
+        "topRight": [
+          2873.39,
+          310.83
+        ],
+        "bottomRight": [
+          2896.52,
+          1439.72
+        ],
+        "bottomLeft": [
+          1637.78,
+          1465.51
+        ]
+      }
+    },
+    "thing-3": {
+      "imageSize": [
+        4032,
+        1816
+      ],
+      "corners": {
+        "topLeft": [
+          1590.76,
+          390.16
+        ],
+        "topRight": [
+          2901.92,
+          349.38
+        ],
+        "bottomRight": [
+          2938.49,
+          1525.25
+        ],
+        "bottomLeft": [
+          1627.33,
+          1566.03
+        ]
+      }
+    },
+    "zelda-poster-1": {
+      "imageSize": [
+        4032,
+        1816
+      ],
+      "corners": {
+        "topLeft": [
+          1696.15,
+          222.35
+        ],
+        "topRight": [
+          3024.64,
+          232.56
+        ],
+        "bottomRight": [
+          3015.49,
+          1423.98
+        ],
+        "bottomLeft": [
+          1687.0,
+          1413.78
+        ]
+      }
+    },
+    "zelda-poster-2": {
+      "imageSize": [
+        4032,
+        1816
+      ],
+      "corners": {
+        "topLeft": [
+          1695.33,
+          244.78
+        ],
+        "topRight": [
+          2926.91,
+          227.04
+        ],
+        "bottomRight": [
+          2942.75,
+          1327.22
+        ],
+        "bottomLeft": [
+          1711.18,
+          1344.96
+        ]
+      }
+    },
+    "zelda-poster-3": {
+      "imageSize": [
+        4032,
+        1816
+      ],
+      "corners": {
+        "topLeft": [
+          1640.8,
+          374.16
+        ],
+        "topRight": [
+          2926.84,
+          325.25
+        ],
+        "bottomRight": [
+          2970.72,
+          1478.96
+        ],
+        "bottomLeft": [
+          1684.68,
+          1527.87
+        ]
+      }
+    }
+  }
+}
