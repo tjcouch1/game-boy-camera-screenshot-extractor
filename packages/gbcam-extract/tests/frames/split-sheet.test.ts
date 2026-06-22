@@ -1,5 +1,4 @@
 import { describe, it, expect } from "vitest";
-import * as fs from "node:fs";
 import { splitSheet } from "../../src/frames/split-sheet.js";
 import type { GBImageData } from "../../src/common.js";
 import { loadImage, repoRoot } from "../helpers/load-image.js";
