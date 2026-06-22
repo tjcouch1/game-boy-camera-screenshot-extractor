@@ -972,7 +972,7 @@ export function quantize(
     // horizontally into them, which (compounded with vertical bleed) is what
     // uniformly lifts their LG pixels into the WH range. Interior columns are
     // left to the global/strip classification (touching them trades errors).
-    const EDGE = /* process.env.COLVALLEY_EDGE ? Number(process.env.COLVALLEY_EDGE) : */ 2;
+    const EDGE = 2;
     for (let x = 0; x < CAM_W; x++) {
       if (x >= EDGE && x < CAM_W - EDGE) continue;
       const gv: number[] = [];
@@ -1054,7 +1054,7 @@ export function quantize(
   // per-column step (3f). Net effect on the reference corpora: tier-1
   // normal unchanged, full slightly improved, self-consistency improved.
   {
-    const RADIUS = process.env.LOCALWH_RADIUS ? Number(process.env.LOCALWH_RADIUS) : 6;
+    const RADIUS = 6;
     const MIN_WARM = 24;
     const MIN_SPREAD = 45;  // local warm-G range must show real LG/WH separation
     const MIN_DEPTH = 0.6;  // valley ≤ this × the smaller mode (a genuine dip)
@@ -1166,8 +1166,8 @@ export function quantize(
         // Warp-R cut at the midpoint of the DG/LG warp centroids = classify
         // by nearest warp centroid (the natural boundary in the clean
         // pre-correct space). BK-neighbour floor of 3 keeps false flips ~zero.
-        const FRAC = process.env.DOT_FRAC ? Number(process.env.DOT_FRAC) : 0.5;
-        const BKMIN = process.env.DOT_BK ? Number(process.env.DOT_BK) : 3;
+        const FRAC = 0.5;
+        const BKMIN = 3;
         const warpCut = warpDgR + (warpLgR - warpDgR) * FRAC;
         const bCut = (dgMeanB + lgMeanB) / 2;
         for (let cy = 0; cy < CAM_H; cy++) {
