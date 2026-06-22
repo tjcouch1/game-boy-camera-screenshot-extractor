@@ -139,7 +139,7 @@ export function ResultCard({
     const basename = filename.replace(/\.[^.]+$/, "");
     const paletteSlug = sanitizePaletteName(paletteName);
     const effectiveFrameName = effectiveFrame
-      ? frameDisplayName(effectiveFrame, frames)
+      ? frameDisplayName(effectiveFrame)
       : "";
     const frameSlug = effectiveFrame ? sanitizeFrameName(effectiveFrameName) : "";
 

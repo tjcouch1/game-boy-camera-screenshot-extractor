@@ -41,12 +41,8 @@ import {
 } from "@/shadcn/components/accordion";
 import { useIsMobile } from "../hooks/useIsMobile.js";
 import { useLocalStorage } from "../hooks/useLocalStorage.js";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/shadcn/components/tooltip";
 import { useClipboardPermission } from "../hooks/useClipboardPermission.js";
+import { PasteButton } from "./PasteButton.js";
 import { MANUAL_SHEETS } from "../generated/FrameSheets.js";
 import type { FrameSelection } from "../types/frame-selection.js";
 import { frameDisplayName } from "../utils/frame-display.js";
@@ -232,7 +228,7 @@ function selectionLabel(
     return `Default${defaultLabel ? ` — ${defaultLabel}` : ""}`;
   if (value.kind === "none") return "No frame";
   const f = framesById.get(value.id);
-  return f ? frameDisplayName(f, frames) : value.id;
+  return f ? frameDisplayName(f) : value.id;
 }
 
 export function FramePicker({
@@ -284,8 +280,11 @@ export function FramePicker({
   // Within those, Normal then Wild, then numeric index.
   const sortedFrames = useMemo(() => {
     const getPrimaryRegion = (f: Frame) => {
-      if (f.aliasStems.includes("Frames_USA")) return "USA";
-      if (f.aliasStems.includes("Frames_JPN")) return "JPN";
+      const stems = [f.sheetStem, ...f.aliasStems];
+      // Shared frames carry the USA alias (USA wins dedup), so they sort with
+      // the USA group — exactly where shared frames belong.
+      if (stems.includes("Frames_USA")) return "USA";
+      if (stems.includes("Frames_JPN")) return "JPN";
       return regionFromStem(f.sheetStem);
     };
 
@@ -351,7 +350,12 @@ export function FramePicker({
   const clipboardPermission = useClipboardPermission();
 
   const manualSheets = useMemo(() => {
-    const presentStems = new Set(frames.map((f) => f.sheetStem));
+    // Include aliasStems so a sheet still counts as "present" after dedup folds
+    // its shared frames under the other region's stem (e.g. JPN frames that all
+    // turned out to be shared still hide the JPN section once uploaded).
+    const presentStems = new Set(
+      frames.flatMap((f) => [f.sheetStem, ...f.aliasStems]),
+    );
     return MANUAL_SHEETS.filter((s) => !presentStems.has(s.stem));
   }, [frames]);
 
@@ -359,32 +363,45 @@ export function FramePicker({
     async (image: GBImageData, stem: string, storage: "original" | "custom") => {
       const addMethod =
         storage === "original" ? onAddOriginalFrames : onAddUserFrames;
-
       if (!addMethod) return;
-      const detected = detectAndLoadFrames(image, stem);
-      const merged = appendDeduped(frames, detected);
-      const newlyKept = merged.slice(frames.length);
 
-      if (newlyKept.length > 0) {
-        try {
-          const { added } = addMethod(newlyKept);
-          const skipped = detected.length - newlyKept.length;
-          const parts = [
-            `Added ${added} frame${added === 1 ? "" : "s"} from ${stem}.`,
-          ];
-          if (skipped > 0) {
-            parts.push(`Skipped ${skipped} duplicate${skipped === 1 ? "" : "s"}.`);
-          }
-          toast.success(parts.join(" "));
-        } catch (err) {
-          if (err instanceof DOMException && err.name === "QuotaExceededError") {
-            toast.error("Out of storage. Delete some frames and try again.");
-          } else {
-            toast.error(`Failed to save frames for ${stem}.`);
-          }
-        }
-      } else {
+      const detected = detectAndLoadFrames(image, stem);
+
+      // Original (USA/JPN) sheets must NOT be deduped across regions here:
+      // a frame shared between USA and JPN is stored under both stems so the
+      // catalog can mark it shared. addOriginalFrames dedups per-sheet on its
+      // own. Custom pastes, by contrast, dedup against the whole catalog so a
+      // paste identical to an existing frame is dropped.
+      const toAdd =
+        storage === "original"
+          ? detected
+          : appendDeduped(frames, detected).slice(frames.length);
+
+      if (toAdd.length === 0) {
         toast.info(`No new frames found in ${stem} (all were duplicates).`);
+        return;
+      }
+
+      try {
+        const { added } = addMethod(toAdd);
+        if (added === 0) {
+          toast.info(`No new frames found in ${stem} (all were duplicates).`);
+          return;
+        }
+        const skipped = detected.length - added;
+        const parts = [
+          `Added ${added} frame${added === 1 ? "" : "s"} from ${stem}.`,
+        ];
+        if (skipped > 0) {
+          parts.push(`Skipped ${skipped} duplicate${skipped === 1 ? "" : "s"}.`);
+        }
+        toast.success(parts.join(" "));
+      } catch (err) {
+        if (err instanceof DOMException && err.name === "QuotaExceededError") {
+          toast.error("Out of storage. Delete some frames and try again.");
+        } else {
+          toast.error(`Failed to save frames for ${stem}.`);
+        }
       }
     },
     [frames, onAddUserFrames, onAddOriginalFrames],
@@ -590,7 +607,7 @@ export function FramePicker({
             {normals.map((f) => (
               <FrameTile
                 key={f.id}
-                label={frameDisplayName(f, frames)}
+                label={frameDisplayName(f)}
                 selected={value.kind === "frame" && value.id === f.id}
                 onClick={() => select({ kind: "frame", id: f.id })}
                 palette={palette}
@@ -610,7 +627,7 @@ export function FramePicker({
             {wilds.map((f) => (
               <FrameTile
                 key={f.id}
-                label={frameDisplayName(f, frames)}
+                label={frameDisplayName(f)}
                 selected={value.kind === "frame" && value.id === f.id}
                 onClick={() => select({ kind: "frame", id: f.id })}
                 palette={palette}
@@ -677,17 +694,19 @@ export function FramePicker({
                       <span className="text-[10px] font-medium text-muted-foreground uppercase">
                         then
                       </span>
-                      <Button
+                      <PasteButton
+                        permission={clipboardPermission}
+                        onPaste={() => handlePaste(region.stem, region.storage)}
+                        deniedReason="paste frames"
                         variant={
                           openedIds.has(region.id) ? "default" : "secondary"
                         }
                         size="sm"
                         className="flex-1 min-w-[100px]"
-                        onClick={() => handlePaste(region.stem, region.storage)}
                       >
                         <ClipboardPaste data-icon="inline-start" />
                         Paste
-                      </Button>
+                      </PasteButton>
                       <span className="text-[10px] font-medium text-muted-foreground uppercase">
                         or
                       </span>
@@ -717,28 +736,16 @@ export function FramePicker({
           <div className="mt-3 mb-2 flex items-center justify-between gap-2">
             <h4 className="text-sm font-semibold">Custom frames</h4>
             <div className="flex gap-2">
-              {clipboardPermission === "denied" ? (
-                <Tooltip>
-                  <TooltipTrigger render={<div />}>
-                    <Button variant="secondary" size="sm" disabled>
-                      <ClipboardPaste data-icon="inline-start" />
-                      Paste
-                    </Button>
-                  </TooltipTrigger>
-                  <TooltipContent>
-                    Enable Clipboard permissions to paste frames
-                  </TooltipContent>
-                </Tooltip>
-              ) : (
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  onClick={() => handlePaste("custom-frame", "custom")}
-                >
-                  <ClipboardPaste data-icon="inline-start" />
-                  Paste
-                </Button>
-              )}
+              <PasteButton
+                permission={clipboardPermission}
+                onPaste={() => handlePaste("custom-frame", "custom")}
+                deniedReason="paste frames"
+                variant="secondary"
+                size="sm"
+              >
+                <ClipboardPaste data-icon="inline-start" />
+                Paste
+              </PasteButton>
               <Button
                 variant="secondary"
                 size="sm"
@@ -759,7 +766,7 @@ export function FramePicker({
               {customs.map((f) => (
                 <FrameTile
                   key={f.id}
-                  label={frameDisplayName(f, frames)}
+                  label={frameDisplayName(f)}
                   selected={value.kind === "frame" && value.id === f.id}
                   onClick={() => select({ kind: "frame", id: f.id })}
                   palette={palette}
@@ -806,31 +813,16 @@ export function FramePicker({
           <DialogTitle>Delete this frame?</DialogTitle>
           <DialogDescription>
             {pendingDeleteFrame
-              ? `"${frameDisplayName(pendingDeleteFrame, frames)}" will be removed. This can't be undone.`
+              ? `"${frameDisplayName(pendingDeleteFrame)}" will be removed. This can't be undone.`
               : "This can't be undone."}
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
-          <DialogClose
-            render={
-              <Button
-                variant="secondary"
-                onClick={(e) => e.stopPropagation()}
-              />
-            }
-          >
+          <DialogClose render={<Button variant="secondary" />}>
             Cancel
           </DialogClose>
           <DialogClose
-            render={
-              <Button
-                variant="destructive"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  confirmDelete();
-                }}
-              />
-            }
+            render={<Button variant="destructive" onClick={confirmDelete} />}
           >
             Delete
           </DialogClose>

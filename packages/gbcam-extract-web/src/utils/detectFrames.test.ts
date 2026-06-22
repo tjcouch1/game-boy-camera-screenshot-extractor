@@ -56,9 +56,9 @@ describe("detectAndLoadFrames", () => {
     ]);
     const result = detectAndLoadFrames(makeImage(), "test");
     expect(result).toHaveLength(2);
-    // detectAndLoadFrames forces kind:"individual" on every result so storage
-    // entries don't carry sheet provenance.
-    expect(result.every((f) => f.kind === "individual")).toBe(true);
+    // Sheet provenance is preserved: regional (USA/JPN) sheet frames rely on
+    // kind:"sheet" + sheetStem to render their "Frame N (region)" label.
+    expect(result.every((f) => f.kind === "sheet")).toBe(true);
     expect(loadIndividualFrameMock).not.toHaveBeenCalled();
   });
 
@@ -138,7 +138,7 @@ describe("detectAndLoadFrames", () => {
     });
     const result = detectAndLoadFrames(makeImage(), "weird");
     expect(result).toHaveLength(1);
-    expect(result[0].kind).toBe("individual");
+    expect(result[0].kind).toBe("sheet");
   });
 
   it("throws when neither splitSheet nor loadIndividualFrame succeed", () => {

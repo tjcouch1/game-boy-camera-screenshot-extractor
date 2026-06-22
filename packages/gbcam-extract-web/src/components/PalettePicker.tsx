@@ -38,18 +38,9 @@ import {
   readPaletteFromClipboard,
 } from "../utils/paletteClipboard.js";
 import { toast } from "sonner";
-import {
-  ClipboardPaste,
-  Copy as CopyIcon,
-  Pencil,
-  Plus,
-} from "lucide-react";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/shadcn/components/tooltip";
+import { Copy as CopyIcon, Pencil, Plus } from "lucide-react";
 import { useClipboardPermission } from "../hooks/useClipboardPermission.js";
+import { PasteButton } from "./PasteButton.js";
 
 interface PalettePickerProps {
   selected: PaletteEntry;
@@ -387,32 +378,19 @@ export function PalettePicker({
             Custom
           </Button>
           {clipboardEnabled && (
-            clipboardPermission === "denied" ? (
-              <Tooltip>
-                <TooltipTrigger render={<div />}>
-                  <Button variant="secondary" size="icon-sm" disabled>
-                    <ClipboardPaste />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>
-                  Enable Clipboard permissions to paste palette colors
-                </TooltipContent>
-              </Tooltip>
-            ) : (
-              <Button
-                variant="secondary"
-                size="icon-sm"
-                onClick={handlePasteNewPalette}
-                disabled={!hasClipboardPalette}
-                aria-label={
-                  hasClipboardPalette
-                    ? "Paste palette from clipboard"
-                    : "Clipboard does not contain a palette"
-                }
-              >
-                <ClipboardPaste />
-              </Button>
-            )
+            <PasteButton
+              permission={clipboardPermission}
+              onPaste={handlePasteNewPalette}
+              deniedReason="paste palette colors"
+              variant="secondary"
+              size="icon-sm"
+              disabled={!hasClipboardPalette}
+              aria-label={
+                hasClipboardPalette
+                  ? "Paste palette from clipboard"
+                  : "Clipboard does not contain a palette"
+              }
+            />
           )}
         </div>
       </div>
@@ -488,35 +466,21 @@ export function PalettePicker({
                             >
                               <CopyIcon />
                             </Button>
-                            {clipboardPermission === "denied" ? (
-                              <Tooltip>
-                                <TooltipTrigger render={<div />}>
-                                  <Button variant="secondary" size="icon-sm" disabled>
-                                    <ClipboardPaste />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>
-                                  Enable Clipboard permissions to paste palette colors
-                                </TooltipContent>
-                              </Tooltip>
-                            ) : (
-                              <Button
-                                variant="secondary"
-                                size="icon-sm"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handlePastePaletteColors(palette.id);
-                                }}
-                                disabled={!hasClipboardPalette}
-                                aria-label={
-                                  hasClipboardPalette
-                                    ? "Paste palette colors from clipboard"
-                                    : "Clipboard does not contain a palette"
-                                }
-                              >
-                                <ClipboardPaste />
-                              </Button>
-                            )}
+                            <PasteButton
+                              permission={clipboardPermission}
+                              onPaste={() =>
+                                handlePastePaletteColors(palette.id)
+                              }
+                              deniedReason="paste palette colors"
+                              variant="secondary"
+                              size="icon-sm"
+                              disabled={!hasClipboardPalette}
+                              aria-label={
+                                hasClipboardPalette
+                                  ? "Paste palette colors from clipboard"
+                                  : "Clipboard does not contain a palette"
+                              }
+                            />
                           </>
                         )}
                       </div>

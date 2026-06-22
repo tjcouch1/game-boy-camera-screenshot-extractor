@@ -75,7 +75,6 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/shadcn/components/dialog";
-import { TooltipProvider } from "@/shadcn/components/tooltip";
 import { useServiceWorker } from "./hooks/useServiceWorker.js";
 
 interface BeforeInstallPromptEvent extends Event {
@@ -174,9 +173,8 @@ export default function App() {
     if (selection.kind === "none") return "No frame";
     if (selection.kind === "default") return "Default";
     const f = catalog.getFrameById(selection.id);
-    return f ? frameDisplayName(f, catalog.frames) : selection.id;
+    return f ? frameDisplayName(f) : selection.id;
   }
-
 
   function resolveEffective(override: FrameSelection): Frame | null {
     const effective = override.kind === "default" ? defaultFrame : override;
@@ -558,7 +556,7 @@ export default function App() {
                           const sanitizedPaletteName = sanitizePaletteName(paletteEntry.name);
                           const frameSlug = effective
                             ? sanitizeFrameName(
-                                frameDisplayName(effective, catalog.frames),
+                                frameDisplayName(effective),
                               )
                             : "";
                           const link = document.createElement("a");
@@ -595,6 +593,7 @@ export default function App() {
                         framePickerDisabled={catalog.status !== "ready"}
                         userFrameIds={catalog.userFrameIds}
                         onAddUserFrames={catalog.addUserFrames}
+                        onAddOriginalFrames={catalog.addOriginalFrames}
                         onDeleteUserFrame={handleDeleteUserFrame}
                         onDelete={() => handleDeleteResult(r.filename)}
                       />
@@ -732,6 +731,7 @@ export default function App() {
                                 framePickerDisabled={catalog.status !== "ready"}
                                 userFrameIds={catalog.userFrameIds}
                                 onAddUserFrames={catalog.addUserFrames}
+                                onAddOriginalFrames={catalog.addOriginalFrames}
                                 onDeleteUserFrame={handleDeleteUserFrame}
                                 onDelete={() =>
                                   deleteFromHistory(batch.id, idx)

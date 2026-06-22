@@ -25,44 +25,29 @@ function prettifyStem(stem: string): string {
  * Human-readable name for a frame, used in the picker UI and download
  * filenames.
  *
- * Examples:
- *   - `Frame 3` — unique index or shared across regional sheets
- *   - `Frame 3 (USA)` — colliding index (e.g. USA and JPN both have a Frame 3
- *     and they are visually different)
+ * Regional (USA/JPN) frames are tagged by which region(s) they belong to,
+ * derived purely from the frame's stems — order-independent and not reliant on
+ * the rest of the catalog:
+ *   - `Frame 3` — shared between USA and JPN (its `aliasStems` cover both)
+ *   - `Frame 3 (USA)` — exclusive to the USA sheet
+ *   - `Frame 3 (JPN)` — exclusive to the JPN sheet
  *   - `Standard matrix` — individual frame; just the cleaned file stem
  */
-export function frameDisplayName(frame: Frame, allFrames?: Frame[]): string {
+export function frameDisplayName(frame: Frame): string {
   if (frame.kind === "individual") return prettifyStem(frame.sheetStem);
   const prefix = frame.type === "wild" ? "Wild Frame" : "Frame";
 
-  const isRegional =
-    frame.sheetStem === "Frames_USA" || frame.sheetStem === "Frames_JPN";
+  const stems = new Set([frame.sheetStem, ...frame.aliasStems]);
+  const inUsa = stems.has("Frames_USA");
+  const inJpn = stems.has("Frames_JPN");
 
-  // If it's shared across sheets (USA + JPN are identical), no region needed.
-  if (frame.aliasStems.length > 1) return `${prefix} ${frame.index}`;
+  // Shared between both regions → no tag. Exclusive to one → that region's tag.
+  if (inUsa && inJpn) return `${prefix} ${frame.index}`;
+  if (inUsa) return `${prefix} ${frame.index} (USA)`;
+  if (inJpn) return `${prefix} ${frame.index} (JPN)`;
 
-  // If it's not a regional frame, always show the stem/region.
-  if (!isRegional)
-    return `${prefix} ${frame.index} (${regionFromStem(frame.sheetStem)})`;
-
-  // If we don't have the context of other frames, assume no collision.
-  if (!allFrames || allFrames.length === 0) return `${prefix} ${frame.index}`;
-
-  // Only show region if another regional frame exists with the same index,
-  // OR if it's a JPN frame (per user requirement to always show JPN tag).
-  const hasCollision = allFrames.some(
-    (f) =>
-      f.id !== frame.id &&
-      f.type === frame.type &&
-      f.index === frame.index &&
-      (f.sheetStem === "Frames_USA" || f.sheetStem === "Frames_JPN"),
-  );
-
-  const hasUsa = allFrames.some((f) => regionFromStem(f.sheetStem) === "USA");
-
-  if (!hasCollision && (regionFromStem(frame.sheetStem) !== "JPN" || !hasUsa))
-    return `${prefix} ${frame.index}`;
-
+  // Non-regional sheet (e.g. a multi-frame custom upload): disambiguate by the
+  // sheet's own region tag/stem.
   return `${prefix} ${frame.index} (${regionFromStem(frame.sheetStem)})`;
 }
 

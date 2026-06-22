@@ -128,8 +128,17 @@ export function useFrameCatalog(): FrameCatalog {
   const merged = useMemo(() => {
     const baseFrames = builtIns.value.frames;
     // Step 1: Merge original sheets (USA/JPN). These are treated like
-    // built-ins (no delete button).
-    const withOriginals = appendDeduped(baseFrames, originalFrames.decodedFrames);
+    // built-ins (no delete button). The original frames are stored without
+    // cross-region dedup (a frame shared between the USA and JPN sheets is kept
+    // under both), so collapse them here with a region-aware tiebreaker:
+    // dedupeFrames keeps the alphabetically-latest sheetStem (Frames_USA beats
+    // Frames_JPN) and merges aliasStems. A shared frame therefore becomes a
+    // single USA-stemmed entry whose aliasStems record both regions — which is
+    // what drives "shared frames sort under USA with no region tag". This is
+    // order-independent: uploading JPN-then-USA yields the same result as
+    // USA-then-JPN.
+    const dedupedOriginals = dedupeFrames(originalFrames.decodedFrames);
+    const withOriginals = appendDeduped(baseFrames, dedupedOriginals);
 
     // Step 2: Merge standard user uploads.
     const userIds = new Set(userFrames.decodedFrames.map((f) => f.id));

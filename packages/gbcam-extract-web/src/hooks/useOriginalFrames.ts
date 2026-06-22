@@ -96,9 +96,20 @@ export function useOriginalFrames(): UseOriginalFramesResult {
     (newFrames: Frame[]): { added: number } => {
       if (newFrames.length === 0) return { added: 0 };
 
-      // Dedupe against current state to prevent duplicate uploads.
-      const currentHashes = new Set(decodedFrames.map((f) => frameFingerprint(f)));
-      const uniqueNew = newFrames.filter((f) => !currentHashes.has(frameFingerprint(f)));
+      // Dedupe against existing frames *from the same sheet* only. A frame
+      // shared between the USA and JPN sheets is pixel-identical but must be
+      // stored under both stems so the catalog can mark it as shared
+      // (see useFrameCatalog). Keying on `sheetStem:fingerprint` blocks
+      // re-uploading the same sheet while preserving cross-region duplicates.
+      const key = (f: Frame) => `${f.sheetStem}:${frameFingerprint(f)}`;
+      const existingKeys = new Set(decodedFrames.map(key));
+      const seen = new Set<string>();
+      const uniqueNew = newFrames.filter((f) => {
+        const k = key(f);
+        if (existingKeys.has(k) || seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
       if (uniqueNew.length === 0) return { added: 0 };
 
       const newEntries: UserFrameEntry[] = [];
