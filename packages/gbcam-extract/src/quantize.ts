@@ -12,6 +12,8 @@ import {
   GB_COLORS,
   CAM_W,
   CAM_H,
+  FRAME_THICK,
+  SCREEN_W,
   createGBImageData,
 } from "./common.js";
 import { getCV, withMats } from "./opencv.js";
@@ -37,6 +39,14 @@ export interface QuantizeOptions {
    * provided.
    */
   corrected?: GBImageData;
+  /**
+   * Optional warped (pre-correct) RGBA image at (SCREEN_W*scale,
+   * SCREEN_H*scale). The `correct` step's affine gain amplifies bleed-lifted
+   * DG pixels' R upward across the DG/LG boundary; the pre-correct warp still
+   * separates DG (low R) from LG (high R) cleanly. Used to recover sparse
+   * DG-on-black dots that correct pushes into LG.
+   */
+  warped?: GBImageData;
   scale?: number;
   debug?: DebugCollector;
 }
@@ -987,6 +997,169 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
     }
     if (dbg && colFlipped > 0) {
       dbg.log(`[quantize] per-column LG/WH valley: ${colFlipped} pixels reclassified`);
+    }
+  }
+
+  // ── 3g. Local adaptive WH/LG threshold (the LG↔WH split is a 1D decision
+  // on G — LG ≈ red/low-G, WH ≈ yellow/high-G). The global G-valley applies
+  // ONE such boundary to the whole frame, but the front-light gradient leaves
+  // WH spatially varying in brightness: where WH is dimmed, its dither dots'
+  // absolute G falls below the global threshold and is mis-labelled LG —
+  // flattening real WH/LG dither into solid LG. A single global 1D threshold
+  // fundamentally can't separate spatially-varying WH from LG (and a per-pixel
+  // RG-distance can't either — a bleed-lifted LG pixel and a dimmed WH pixel
+  // have near-identical colour; only their LOCAL context differs).
+  //
+  // So decide the LG/WH split from each pixel's LOCAL window: build the
+  // warm-pixel (LG/WH) G histogram in a small neighbourhood, and if it is
+  // genuinely bimodal (two G-modes with a real dip), threshold at the local
+  // valley. The local WH and LG levels stay cleanly separated regardless of
+  // the regional brightness, so this recovers the right split everywhere. In
+  // a uniform or non-bimodal window it makes no change (falls back to the
+  // global classification), and the outermost columns are left to the
+  // per-column step (3f). Net effect on the reference corpora: tier-1
+  // normal unchanged, full slightly improved, self-consistency improved.
+  {
+    const RADIUS = process.env.LOCALWH_RADIUS ? Number(process.env.LOCALWH_RADIUS) : 6;
+    const MIN_WARM = 24;
+    const MIN_SPREAD = 45;  // local warm-G range must show real LG/WH separation
+    const MIN_DEPTH = 0.6;  // valley ≤ this × the smaller mode (a genuine dip)
+    const EDGE = 2;         // outermost columns are owned by the per-column step (3f)
+    const whFloor = paletteCenters[2][1] + 40; // upper mode must be clearly above LG to be WH
+    const before = finalLabels.slice();
+    let localFlipped = 0;
+    for (let y = 0; y < CAM_H; y++) {
+      for (let x = 0; x < CAM_W; x++) {
+        if (x < EDGE || x >= CAM_W - EDGE) continue;
+        const i = y * CAM_W + x;
+        if (before[i] !== 2 && before[i] !== 3) continue;
+        const gv: number[] = [];
+        const yLo = Math.max(0, y - RADIUS);
+        const yHi = Math.min(CAM_H - 1, y + RADIUS);
+        const xLo = Math.max(0, x - RADIUS);
+        const xHi = Math.min(CAM_W - 1, x + RADIUS);
+        for (let yy = yLo; yy <= yHi; yy++) {
+          for (let xx = xLo; xx <= xHi; xx++) {
+            const k = yy * CAM_W + xx;
+            if (before[k] === 2 || before[k] === 3) gv.push(flatRG[k * 2 + 1]);
+          }
+        }
+        if (gv.length < MIN_WARM) continue;
+        let lo = Infinity, hi = -Infinity;
+        for (const g of gv) { if (g < lo) lo = g; if (g > hi) hi = g; }
+        if (hi - lo < MIN_SPREAD) continue; // uniform warm region — trust global
+        const nb = Math.round(hi - lo) + 1;
+        const hist = new Array<number>(nb).fill(0);
+        for (const g of gv) hist[Math.min(nb - 1, Math.max(0, Math.round(g - lo)))]++;
+        const sm = gaussianFilter1d(hist, Math.max(2, (hi - lo) / 12));
+        // Tallest mode, then the tallest mode separated from it by a dip.
+        let p1 = 0; for (let k = 1; k < nb; k++) if (sm[k] > sm[p1]) p1 = k;
+        let p2 = -1; for (let k = 0; k < nb; k++) {
+          if (Math.abs(k - p1) < (hi - lo) / 6) continue;
+          if (p2 < 0 || sm[k] > sm[p2]) p2 = k;
+        }
+        if (p2 < 0) continue;
+        const a = Math.min(p1, p2), b = Math.max(p1, p2);
+        let valley = a; for (let k = a + 1; k <= b; k++) if (sm[k] < sm[valley]) valley = k;
+        const peakMin = Math.min(sm[p1], sm[p2]);
+        if (peakMin <= 0 || sm[valley] > MIN_DEPTH * peakMin) continue; // not bimodal
+        const upperModeG = lo + b;
+        if (upperModeG < whFloor) continue;        // upper mode not bright enough to be WH
+        const valleyG = lo + valley;
+        const want = flatRG[i * 2 + 1] >= valleyG ? 3 : 2;
+        if (want !== finalLabels[i]) {
+          finalLabels[i] = want;
+          localFlipped++;
+        }
+      }
+    }
+    if (dbg && localFlipped > 0) {
+      dbg.log(`[quantize] local adaptive WH/LG: ${localFlipped} pixels reclassified`);
+    }
+  }
+
+  // ── 3h. Recover sparse DG-on-black dots using the pre-correct warp.
+  // The `correct` step's affine gain amplifies a bleed-lifted DG pixel's R
+  // upward (warp R≈120 → sample R≈190), pushing isolated DG dots across the
+  // DG/LG boundary so they're mis-labelled LG. The PRE-correct warp still
+  // separates DG (low R) from LG (high R) cleanly — that signal is destroyed
+  // downstream. Per-pixel reclassification of these is otherwise impossible
+  // (in the ambiguous band LG outnumbers DG ~1000:1), but a DG dot has THREE
+  // independent signatures at once that a stray LG pixel does not:
+  //   (1) its warp R is closer to the DG mode than the LG mode,
+  //   (2) high B (the DG colour, B≈255 vs LG≈148), and
+  //   (3) it sits on a black background (≥3 BK neighbours — the sparse-dot
+  //       structure; LG lives among warm neighbours, not on black).
+  // Requiring all three keeps false flips to near-zero. All thresholds are
+  // derived from this image's own DG/LG statistics (no magic constants).
+  if (options?.warped) {
+    const wq = options.warped;
+    const sc = options?.scale ?? Math.round(wq.width / SCREEN_W);
+    const m0 = Math.max(1, Math.floor(sc / 4));
+    const m1 = Math.max(m0 + 1, Math.ceil((sc * 3) / 4));
+    // Mean warp R over the inner block of each camera pixel.
+    const warpRcam = new Float32Array(N);
+    for (let cy = 0; cy < CAM_H; cy++) {
+      for (let cx = 0; cx < CAM_W; cx++) {
+        const sx = (cx + FRAME_THICK) * sc;
+        const sy = (cy + FRAME_THICK) * sc;
+        let sum = 0, cnt = 0;
+        for (let yy = sy + m0; yy < sy + m1; yy++) {
+          for (let xx = sx + m0; xx < sx + m1; xx++) {
+            sum += wq.data[(yy * wq.width + xx) * 4];
+            cnt++;
+          }
+        }
+        warpRcam[cy * CAM_W + cx] = cnt > 0 ? sum / cnt : 0;
+      }
+    }
+    // Image-derived warp-R centroids of confidently-labelled DG and LG.
+    let dgSum = 0, dgN = 0, lgSum = 0, lgN = 0;
+    let dgBsum = 0, lgBsum = 0;
+    for (let i = 0; i < N; i++) {
+      if (finalLabels[i] === 1) { dgSum += warpRcam[i]; dgN++; dgBsum += input.data[i * 4 + 2]; }
+      else if (finalLabels[i] === 2) { lgSum += warpRcam[i]; lgN++; lgBsum += input.data[i * 4 + 2]; }
+    }
+    let dotsFixed = 0;
+    if (dgN >= 20 && lgN >= 20) {
+      const warpDgR = dgSum / dgN;
+      const warpLgR = lgSum / lgN;
+      const dgMeanB = dgBsum / dgN;
+      const lgMeanB = lgBsum / lgN;
+      // Only meaningful when the warp actually separates DG from LG in R and
+      // DG carries distinctly higher B than LG.
+      if (warpLgR - warpDgR > 40 && dgMeanB - lgMeanB > 20) {
+        // Warp-R cut at the midpoint of the DG/LG warp centroids = classify
+        // by nearest warp centroid (the natural boundary in the clean
+        // pre-correct space). BK-neighbour floor of 3 keeps false flips ~zero.
+        const FRAC = process.env.DOT_FRAC ? Number(process.env.DOT_FRAC) : 0.5;
+        const BKMIN = process.env.DOT_BK ? Number(process.env.DOT_BK) : 3;
+        const warpCut = warpDgR + (warpLgR - warpDgR) * FRAC;
+        const bCut = (dgMeanB + lgMeanB) / 2;
+        for (let cy = 0; cy < CAM_H; cy++) {
+          for (let cx = 0; cx < CAM_W; cx++) {
+            const i = cy * CAM_W + cx;
+            if (finalLabels[i] !== 2) continue;            // only output-LG
+            if (warpRcam[i] >= warpCut) continue;          // (1) warp R clearly DG
+            if (input.data[i * 4 + 2] <= bCut) continue;   // (2) high B (DG)
+            let bk = 0;                                      // (3) on black bg
+            for (let dy = -1; dy <= 1; dy++) {
+              for (let dx = -1; dx <= 1; dx++) {
+                if (!dx && !dy) continue;
+                const yy = cy + dy, xx = cx + dx;
+                if (yy < 0 || xx < 0 || yy >= CAM_H || xx >= CAM_W) continue;
+                if (finalLabels[yy * CAM_W + xx] === 0) bk++;
+              }
+            }
+            if (bk < BKMIN) continue;
+            finalLabels[i] = 1;
+            dotsFixed++;
+          }
+        }
+      }
+    }
+    if (dbg && dotsFixed > 0) {
+      dbg.log(`[quantize] warp-R DG-dot recovery: ${dotsFixed} pixels reclassified`);
     }
   }
 

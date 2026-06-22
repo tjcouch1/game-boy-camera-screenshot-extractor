@@ -80,17 +80,65 @@ export function warp(input: GBImageData, options?: WarpOptions): GBImageData {
   }
 
   // b — Initial perspective warp
-  let { warped: currentWarped, M: currentM } = initialWarp(bgr, corners, scale);
+  const init = initialWarp(bgr, corners, scale);
 
   // c — Perspective refinement passes (2 iterations is enough; a 3rd doesn't
-  // measurably converge further given polynomial-fit noise)
-  for (let pass = 1; pass <= 2; pass++) {
-    const result = refineWarpWithMetrics(bgr, currentM, currentWarped, scale);
-    if (dbg) recordRefinementMetrics(dbg, pass, result.metrics);
-    currentM.delete();
-    currentWarped.delete();
-    currentM = result.M;
-    currentWarped = result.refined;
+  // measurably converge further given polynomial-fit noise).
+  //
+  // Each pass re-detects the frame border in the current warp and rebuilds
+  // the transform by back-projecting onto the original photo — so every
+  // pass's output is an INDEPENDENT single resample of the source, not a
+  // re-warp of the previous warp (no accumulated blur). That lets us treat
+  // the passes as candidates and keep whichever is best-aligned.
+  //
+  // Why this matters: the refinement is normally convergent (each pass
+  // leaves the frame edges better aligned), but when an edge's border
+  // detection is biased — a blurry or doubled edge, e.g. some full-photo
+  // left edges where the dim leftmost B sub-pixel column muddies the
+  // WH→LCD transition — the correction feeds back positively and that edge
+  // drifts a full GB pixel pass-over-pass (observed: left edge 3.8→7.9 px,
+  // producing a doubled/folded left border). The guard below detects that
+  // (a later pass is worse-aligned than an earlier one) and keeps the
+  // best pass instead. Well-behaved images always converge, so warp2 stays
+  // the best candidate and behaviour is unchanged.
+  const r1 = refineWarpWithMetrics(bgr, init.M, init.warped, scale);
+  if (dbg) recordRefinementMetrics(dbg, 1, r1.metrics);
+  const m0 = maxAbsEdgeCurvature(r1.metrics.edgeCurvatures); // offsets on init warp
+  const r2 = refineWarpWithMetrics(bgr, r1.M, r1.refined, scale);
+  if (dbg) recordRefinementMetrics(dbg, 2, r2.metrics);
+  const m1 = maxAbsEdgeCurvature(r2.metrics.edgeCurvatures); // offsets on warp1
+  const m2 = measureMaxEdgeOffset(r2.refined, scale);        // offsets on warp2
+
+  // Candidates: 0 = initial warp, 1 = after pass 1, 2 = after pass 2.
+  // Default to the fully-refined warp2; only fall back to an earlier pass
+  // when it is better-aligned by a clear margin, so converging images
+  // (every reliable photo) are completely unaffected.
+  const DIVERGENCE_MARGIN = 1.5;
+  const candidates: Array<{ warped: any; M: any; maxOff: number }> = [
+    { warped: init.warped, M: init.M, maxOff: m0 },
+    { warped: r1.refined, M: r1.M, maxOff: m1 },
+    { warped: r2.refined, M: r2.M, maxOff: m2 },
+  ];
+  let chosen = 2;
+  for (let i = 1; i >= 0; i--) {
+    if (candidates[i].maxOff + DIVERGENCE_MARGIN < candidates[chosen].maxOff) {
+      chosen = i;
+    }
+  }
+  if (dbg && chosen !== 2) {
+    dbg.log(
+      `[warp] refinement diverged — using pass ${chosen} ` +
+        `(max edge offset ${candidates[chosen].maxOff.toFixed(2)} px vs ` +
+        `pass-2 ${m2.toFixed(2)} px)`,
+    );
+  }
+  let currentWarped = candidates[chosen].warped;
+  let currentM = candidates[chosen].M;
+  for (let i = 0; i < candidates.length; i++) {
+    if (i !== chosen) {
+      candidates[i].warped.delete();
+      candidates[i].M.delete();
+    }
   }
 
   // d — Non-linear remap pass (handles residual lens-style curvature that
@@ -1044,6 +1092,41 @@ export function buildRBChannel(warped: any): any {
     }
     return untrack(result);
   });
+}
+
+/**
+ * Measure how far the four inner-border edges sit from their expected
+ * positions in a warped frame — the max over edges of the mean signed
+ * border-point offset. Used by the divergence guard to compare refinement
+ * passes (a converging refinement shrinks this; a diverging one grows it).
+ */
+function measureMaxEdgeOffset(warped: any, scale: number): number {
+  const rbCh = buildRBChannel(warped);
+  const bp = findBorderPoints(rbCh, scale);
+  rbCh.delete();
+  const expTop = INNER_TOP * scale;
+  const expBottom = INNER_BOT * scale;
+  const expLeft = INNER_LEFT * scale;
+  const expRight = INNER_RIGHT * scale;
+  const meanOff = (pts: Point[], exp: number, idx: number): number =>
+    pts.length > 0
+      ? Math.abs(pts.reduce((s, p) => s + (p[idx] - exp), 0) / pts.length)
+      : 0;
+  return Math.max(
+    meanOff(bp.top, expTop, 1),
+    meanOff(bp.bottom, expBottom, 1),
+    meanOff(bp.left, expLeft, 0),
+    meanOff(bp.right, expRight, 0),
+  );
+}
+
+function maxAbsEdgeCurvature(ec: RefineMetrics["edgeCurvatures"]): number {
+  return Math.max(
+    Math.abs(ec.top),
+    Math.abs(ec.bottom),
+    Math.abs(ec.left),
+    Math.abs(ec.right),
+  );
 }
 
 // ─── Refine warp (perspective back-projection refinement) ───
