@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect } from "react";
 import { flushSync } from "react-dom";
 import type { PipelineResult, GBImageData } from "gbcam-extract";
 import { processPicture } from "gbcam-extract";
+import { toast } from "sonner";
 import type { FrameSelection } from "../types/frame-selection.js";
 import {
   serializePipelineResult,
@@ -245,7 +246,9 @@ export function useProcessing() {
           overallProgress: nextProgressValue,
         }));
       } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : String(err);
         console.error(`Failed to process ${file.name}:`, err);
+        toast.error(`Failed to process ${file.name}: ${errorMsg}`);
         const completedCount = fileIndex + 1;
         const nextProgressValue = calculateOverallProgress(
           completedCount,
