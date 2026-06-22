@@ -2,6 +2,7 @@ import { useRef, useState, useCallback } from "react";
 import { Upload } from "lucide-react";
 import { Button } from "@/shadcn/components/button";
 import { cn } from "@/shadcn/utils/utils";
+import { SamplePicturePicker } from "./SamplePicturePicker.js";
 
 interface ImageInputProps {
   onImagesSelected: (files: File[]) => void;
@@ -69,7 +70,7 @@ export function ImageInput({ onImagesSelected, disabled }: ImageInputProps) {
         </div>
       </div>
 
-      <div className="flex gap-3 mt-3">
+      <div className="flex flex-wrap gap-3 mt-3">
         <Button
           variant="secondary"
           onClick={() => fileInputRef.current?.click()}
@@ -84,6 +85,10 @@ export function ImageInput({ onImagesSelected, disabled }: ImageInputProps) {
         >
           Camera Capture
         </Button>
+        <SamplePicturePicker
+          onImagesSelected={onImagesSelected}
+          disabled={disabled}
+        />
       </div>
 
       <input

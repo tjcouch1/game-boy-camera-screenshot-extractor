@@ -1,15 +1,27 @@
 import { useState, useCallback, useEffect } from "react";
-import type { PipelineResult } from "gbcam-extract";
+import type { Frame } from "gbcam-extract";
 import { useOpenCV } from "./hooks/useOpenCV.js";
 import { useImageHistory } from "./hooks/useImageHistory.js";
+import { useFrameCatalog } from "./hooks/useFrameCatalog.js";
 import { ImageInput } from "./components/ImageInput.js";
 import { useProcessing } from "./hooks/useProcessing.js";
 import type { ProcessingProgress } from "./hooks/useProcessing.js";
 import { ResultCard } from "./components/ResultCard.js";
+import { FramePicker } from "./components/FramePicker.js";
 import { PalettePicker } from "./components/PalettePicker.js";
 import { PipelineDebugViewer } from "./components/PipelineDebugViewer.js";
 import { sanitizePaletteName } from "./utils/filenames.js";
+import { buildOutputCanvas } from "./utils/buildOutputCanvas.js";
+import {
+  frameDisplayName,
+  sanitizeFrameName,
+} from "./utils/frame-display.js";
 import type { PaletteEntry } from "./data/palettes.js";
+import {
+  type FrameSelection,
+  FRAME_SELECTION_DEFAULT,
+  FRAME_SELECTION_NONE,
+} from "./types/frame-selection.js";
 import { CollapsibleInstructions } from "./components/CollapsibleInstructions.js";
 import { USER_INSTRUCTIONS_MARKDOWN } from "./generated/UserInstructions.js";
 import { useAppSettings } from "./hooks/useAppSettings.js";
@@ -96,7 +108,13 @@ function ProgressDisplay({ progress }: { progress: ProcessingProgress }) {
         </span>
         <span>{progress.overallProgress}%</span>
       </div>
-      <Progress value={progress.overallProgress} />
+      {/* Disable the indicator's width transition: the pipeline updates
+          progress in step-sized jumps that finish faster than the default
+          150ms ease, so the animated bar lags behind the shown percentage. */}
+      <Progress
+        value={progress.overallProgress}
+        className="[&_[data-slot=progress-indicator]]:transition-none"
+      />
       <div className="text-xs text-muted-foreground">
         Step: {progress.currentImageProgress.currentStep || "Starting..."}
       </div>
@@ -123,6 +141,8 @@ export default function App() {
     deleteAllHistory,
     updateSettings: updateHistorySettings,
     settings: historySettings,
+    updateFrameOverride: updateHistoryFrameOverride,
+    purgeFrameOverride: purgeHistoryFrameOverride,
   } = useImageHistory();
   const { settings, updateSetting } = useAppSettings();
   const debug = settings.debug;
@@ -133,6 +153,47 @@ export default function App() {
     name: "Down",
     colors: ["#FFFFA5", "#FF9494", "#9494FF", "#000000"],
   };
+
+  const catalog = useFrameCatalog();
+  const defaultFrame: FrameSelection =
+    settings.defaultFrame ?? FRAME_SELECTION_NONE;
+
+  function setDefaultFrame(next: FrameSelection) {
+    // The "Default" tile is hidden in mode="default" pickers, so the global
+    // default itself can never be `kind: "default"`. Warn loudly if a future
+    // caller breaks that invariant rather than silently dropping the change.
+    if (next.kind === "default") {
+      console.warn("setDefaultFrame received kind=default; ignoring");
+      return;
+    }
+    updateSetting("defaultFrame", next);
+  }
+
+  function frameLabelFor(selection: FrameSelection): string {
+    if (selection.kind === "none") return "No frame";
+    if (selection.kind === "default") return "Default";
+    const f = catalog.getFrameById(selection.id);
+    return f ? frameDisplayName(f, catalog.frames) : selection.id;
+  }
+
+  function resolveEffective(override: FrameSelection): Frame | null {
+    const effective = override.kind === "default" ? defaultFrame : override;
+    if (effective.kind === "frame") {
+      return catalog.getFrameById(effective.id) ?? null;
+    }
+    return null;
+  }
+
+  const defaultFrameLabel = frameLabelFor(defaultFrame);
+  const resolvedDefaultFrame: Frame | null = resolveEffective(defaultFrame);
+
+  function setResultFrameOverride(filename: string, next: FrameSelection) {
+    setCurrentResults((prev) =>
+      prev.map((r) =>
+        r.filename === filename ? { ...r, frameOverride: next } : r,
+      ),
+    );
+  }
 
   const setDebug = (value: boolean) => updateSetting("debug", value);
   const setClipboardEnabled = (value: boolean) =>
@@ -222,6 +283,41 @@ export default function App() {
     [setCurrentResults],
   );
 
+  // Deleting a user frame must also scrub every selection that pointed at it:
+  // the global default reverts to FRAME_SELECTION_NONE (the factory default),
+  // and any per-result override resets to {kind: "default"} so it follows the
+  // global default. History overrides of {kind: "default"} need no scrubbing —
+  // they already inherit from the updated global default.
+  const handleDeleteUserFrame = useCallback(
+    (id: string) => {
+      catalog.deleteUserFrame(id);
+
+      if (
+        settings.defaultFrame?.kind === "frame" &&
+        settings.defaultFrame.id === id
+      ) {
+        updateSetting("defaultFrame", FRAME_SELECTION_NONE);
+      }
+
+      setCurrentResults((prev) =>
+        prev.map((r) =>
+          r.frameOverride?.kind === "frame" && r.frameOverride.id === id
+            ? { ...r, frameOverride: FRAME_SELECTION_DEFAULT }
+            : r,
+        ),
+      );
+
+      purgeHistoryFrameOverride(id);
+    },
+    [
+      catalog,
+      settings.defaultFrame,
+      updateSetting,
+      setCurrentResults,
+      purgeHistoryFrameOverride,
+    ],
+  );
+
   return (
     <div className="min-h-screen bg-background text-foreground flex flex-col">
       <Toaster richColors position="bottom-center" />
@@ -306,6 +402,17 @@ export default function App() {
           </Alert>
         )}
 
+        {catalog.status === "error" && (
+          <Alert variant="destructive" className="mb-6">
+            <AlertTriangle />
+            <AlertTitle>Failed to load frame sheets</AlertTitle>
+            <AlertDescription>
+              {catalog.error ?? "Frames will not be available."} You can still
+              process and download images without frames.
+            </AlertDescription>
+          </Alert>
+        )}
+
         {status === "ready" && (
           <>
             <FieldGroup className="mb-6 flex-row flex-wrap items-center gap-4">
@@ -349,12 +456,84 @@ export default function App() {
               </Empty>
             )}
 
-            <div className="mt-6 mb-4">
+            <div className="mt-6 mb-4 space-y-6">
               <PalettePicker
                 selected={paletteEntry}
                 onSelectWithName={handlePaletteSelected}
                 clipboardEnabled={clipboardEnabled}
               />
+              
+              <FieldGroup className="flex-row flex-wrap items-center gap-4">
+                <Field orientation="horizontal" className="w-auto gap-2">
+                  <FieldLabel htmlFor="output-scale">
+                    Output Scale:
+                  </FieldLabel>
+                  <Select
+                    value={String(outputScale)}
+                    onValueChange={(v) => {
+                      if (typeof v === "string")
+                        setOutputScale(parseInt(v, 10));
+                    }}
+                  >
+                    <SelectTrigger id="output-scale" className="w-fit">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value="1">1x (128x112)</SelectItem>
+                        <SelectItem value="2">2x (256x224)</SelectItem>
+                        <SelectItem value="3">3x (384x336)</SelectItem>
+                        <SelectItem value="4">4x (512x448)</SelectItem>
+                        <SelectItem value="8">8x (1024x896)</SelectItem>
+                        <SelectItem value="16">16x (2048x1792)</SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field orientation="horizontal" className="w-auto gap-2">
+                  <FieldLabel htmlFor="preview-scale">
+                    Preview Scale:
+                  </FieldLabel>
+                  <Select
+                    value={String(previewScale)}
+                    onValueChange={(v) => {
+                      if (typeof v === "string")
+                        setPreviewScale(parseInt(v, 10));
+                    }}
+                  >
+                    <SelectTrigger id="preview-scale" className="w-fit">
+                      <span className="flex flex-1 text-start">
+                        {previewScale}x
+                      </span>
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectGroup>
+                        <SelectItem value="1">1x (128x112)</SelectItem>
+                        <SelectItem value="2">2x (256x224)</SelectItem>
+                        <SelectItem value="3">3x (384x336)</SelectItem>
+                        <SelectItem value="4">4x (512x448)</SelectItem>
+                        <SelectItem value="8">8x (1024x896)</SelectItem>
+                        <SelectItem value="16">16x (2048x1792)</SelectItem>
+                      </SelectGroup>
+                    </SelectContent>
+                  </Select>
+                </Field>
+                <Field orientation="horizontal" className="w-auto gap-2">
+                  <FieldLabel>Default Frame:</FieldLabel>
+                  <FramePicker
+                    value={defaultFrame}
+                    onChange={setDefaultFrame}
+                    palette={paletteEntry.colors}
+                    frames={catalog.frames}
+                    mode="default"
+                    disabled={catalog.status !== "ready"}
+                    userFrameIds={catalog.userFrameIds}
+                    onAddUserFrames={catalog.addUserFrames}
+                    onAddOriginalFrames={catalog.addOriginalFrames}
+                    onDeleteUserFrame={handleDeleteUserFrame}
+                  />
+                </Field>
+              </FieldGroup>
             </div>
 
             {results.length > 0 && (
@@ -364,73 +543,34 @@ export default function App() {
                     <Button
                       onClick={() => {
                         results.forEach((r) => {
-                          downloadResult(
-                            r.filename,
+                          const override = r.frameOverride ?? FRAME_SELECTION_DEFAULT;
+                          const effective = resolveEffective(override);
+                          const canvas = buildOutputCanvas(
                             r.result,
                             paletteEntry.colors,
-                            paletteEntry.name,
+                            effective,
                             outputScale,
                           );
+                          if (!canvas) return;
+                          const baseName = r.filename.replace(/\.[^.]+$/, "");
+                          const sanitizedPaletteName = sanitizePaletteName(paletteEntry.name);
+                          const frameSlug = effective
+                            ? sanitizeFrameName(
+                                frameDisplayName(effective, catalog.frames),
+                              )
+                            : "";
+                          const link = document.createElement("a");
+                          link.download = [baseName, sanitizedPaletteName, frameSlug, "gb"]
+                            .filter(Boolean)
+                            .join("_") + ".png";
+                          link.href = canvas.toDataURL("image/png");
+                          link.click();
                         });
                       }}
                     >
                       Download All ({results.length})
                     </Button>
                   )}
-                  <Field orientation="horizontal" className="w-auto gap-2">
-                    <FieldLabel htmlFor="output-scale">
-                      Output Scale:
-                    </FieldLabel>
-                    <Select
-                      value={String(outputScale)}
-                      onValueChange={(v) => {
-                        if (typeof v === "string")
-                          setOutputScale(parseInt(v, 10));
-                      }}
-                    >
-                      <SelectTrigger id="output-scale" className="w-fit">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          <SelectItem value="1">1x (128x112)</SelectItem>
-                          <SelectItem value="2">2x (256x224)</SelectItem>
-                          <SelectItem value="3">3x (384x336)</SelectItem>
-                          <SelectItem value="4">4x (512x448)</SelectItem>
-                          <SelectItem value="8">8x (1024x896)</SelectItem>
-                          <SelectItem value="16">16x (2048x1792)</SelectItem>
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                  </Field>
-                  <Field orientation="horizontal" className="w-auto gap-2">
-                    <FieldLabel htmlFor="preview-scale">
-                      Preview Scale:
-                    </FieldLabel>
-                    <Select
-                      value={String(previewScale)}
-                      onValueChange={(v) => {
-                        if (typeof v === "string")
-                          setPreviewScale(parseInt(v, 10));
-                      }}
-                    >
-                      <SelectTrigger id="preview-scale" className="w-fit">
-                        <span className="flex flex-1 text-start">
-                          {previewScale}x
-                        </span>
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectGroup>
-                          <SelectItem value="1">1x (128x112)</SelectItem>
-                          <SelectItem value="2">2x (256x224)</SelectItem>
-                          <SelectItem value="3">3x (384x336)</SelectItem>
-                          <SelectItem value="4">4x (512x448)</SelectItem>
-                          <SelectItem value="8">8x (1024x896)</SelectItem>
-                          <SelectItem value="16">16x (2048x1792)</SelectItem>
-                        </SelectGroup>
-                      </SelectContent>
-                    </Select>
-                  </Field>
                 </div>
 
                 <div className="grid gap-4">
@@ -444,6 +584,17 @@ export default function App() {
                         paletteName={paletteEntry.name}
                         outputScale={outputScale}
                         previewScale={previewScale}
+                        frames={catalog.frames}
+                        frameOverride={r.frameOverride ?? FRAME_SELECTION_DEFAULT}
+                        onFrameOverrideChange={(next) => setResultFrameOverride(r.filename, next)}
+                        effectiveFrame={resolveEffective(r.frameOverride ?? FRAME_SELECTION_DEFAULT)}
+                        defaultFrameLabel={defaultFrameLabel}
+                        defaultFrame={resolvedDefaultFrame}
+                        framePickerDisabled={catalog.status !== "ready"}
+                        userFrameIds={catalog.userFrameIds}
+                        onAddUserFrames={catalog.addUserFrames}
+                        onAddOriginalFrames={catalog.addOriginalFrames}
+                        onDeleteUserFrame={handleDeleteUserFrame}
                         onDelete={() => handleDeleteResult(r.filename)}
                       />
                       {(r.result.intermediates || r.result.debug) && (
@@ -569,6 +720,19 @@ export default function App() {
                                 paletteName={paletteEntry.name}
                                 outputScale={outputScale}
                                 previewScale={previewScale}
+                                frames={catalog.frames}
+                                frameOverride={result.frameOverride ?? FRAME_SELECTION_DEFAULT}
+                                onFrameOverrideChange={(next) =>
+                                  updateHistoryFrameOverride(batch.id, idx, next)
+                                }
+                                effectiveFrame={resolveEffective(result.frameOverride ?? FRAME_SELECTION_DEFAULT)}
+                                defaultFrameLabel={defaultFrameLabel}
+                                defaultFrame={resolvedDefaultFrame}
+                                framePickerDisabled={catalog.status !== "ready"}
+                                userFrameIds={catalog.userFrameIds}
+                                onAddUserFrames={catalog.addUserFrames}
+                                onAddOriginalFrames={catalog.addOriginalFrames}
+                                onDeleteUserFrame={handleDeleteUserFrame}
                                 onDelete={() =>
                                   deleteFromHistory(batch.id, idx)
                                 }
@@ -602,49 +766,3 @@ export default function App() {
   );
 }
 
-function downloadResult(
-  filename: string,
-  result: PipelineResult,
-  palette: [string, string, string, string],
-  paletteName: string,
-  outputScale: number = 1,
-) {
-  // Dynamically import to avoid circular issues
-  import("gbcam-extract").then(({ applyPalette }) => {
-    try {
-      // Validate input before processing
-      if (!result.grayscale || !result.grayscale.data) {
-        console.error("Cannot download: invalid image data");
-        return;
-      }
-
-      const colored = applyPalette(result.grayscale, palette);
-
-      if (!colored || !colored.data || colored.data.length === 0) {
-        console.error("Failed to apply palette for download");
-        return;
-      }
-
-      const canvas = document.createElement("canvas");
-      canvas.width = colored.width * outputScale;
-      canvas.height = colored.height * outputScale;
-      const ctx = canvas.getContext("2d")!;
-      ctx.imageSmoothingEnabled = false;
-      const cloned = new Uint8ClampedArray(colored.data);
-      const imgData = new ImageData(cloned, colored.width, colored.height);
-      const tmp = document.createElement("canvas");
-      tmp.width = colored.width;
-      tmp.height = colored.height;
-      tmp.getContext("2d")!.putImageData(imgData, 0, 0);
-      ctx.drawImage(tmp, 0, 0, canvas.width, canvas.height);
-      const link = document.createElement("a");
-      const baseName = filename.replace(/\.[^.]+$/, "");
-      const sanitizedPaletteName = sanitizePaletteName(paletteName);
-      link.download = `${baseName}_${sanitizedPaletteName}_gb.png`;
-      link.href = canvas.toDataURL("image/png");
-      link.click();
-    } catch (err) {
-      console.error("Error downloading image:", err);
-    }
-  });
-}

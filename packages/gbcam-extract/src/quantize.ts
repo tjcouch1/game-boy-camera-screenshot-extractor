@@ -17,11 +17,7 @@ import {
   createGBImageData,
 } from "./common.js";
 import { getCV, withMats } from "./opencv.js";
-import {
-  type DebugCollector,
-  renderRGScatter,
-  upscale,
-} from "./debug.js";
+import { type DebugCollector, renderRGScatter, upscale } from "./debug.js";
 import {
   buildFrameClassifier,
   classifyByFrame,
@@ -67,7 +63,6 @@ const INIT_CENTERS_RG: [number, number][] = [
   [240, 148],
   [250, 250],
 ];
-
 
 // ─── Helpers ───
 
@@ -355,7 +350,10 @@ function gValleyThreshold(
  * 2. Strip k-means refinement for lateral gradient
  * 3. G-valley LG/WH refinement for pixel bleeding correction
  */
-export function quantize(input: GBImageData, options?: QuantizeOptions): GBImageData {
+export function quantize(
+  input: GBImageData,
+  options?: QuantizeOptions,
+): GBImageData {
   if (input.width !== CAM_W || input.height !== CAM_H) {
     throw new Error(
       `Expected ${CAM_W}x${CAM_H}, got ${input.width}x${input.height}`,
@@ -435,8 +433,6 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
     }
   }
 
-
-
   // ── 2. Strip k-means refinement ──
   const stripWidth = 32;
   const step = 16;
@@ -477,7 +473,10 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
     for (let pi = 0; pi < 4; pi++) {
       let ci = -1;
       for (let cj = 0; cj < 4; cj++) {
-        if (c2p[cj] === pi) { ci = cj; break; }
+        if (c2p[cj] === pi) {
+          ci = cj;
+          break;
+        }
       }
       if (ci >= 0) {
         stripCentersPO[pi * 2] = stripResult.centers[ci * 2];
@@ -486,8 +485,12 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
         stripCentersPO[pi * 2] = globalCentersPO[pi * 2];
         stripCentersPO[pi * 2 + 1] = globalCentersPO[pi * 2 + 1];
       }
-      blendedCenters[pi * 2] = stripCentersPO[pi * 2] * (1 - ANCHOR_W) + globalCentersPO[pi * 2] * ANCHOR_W;
-      blendedCenters[pi * 2 + 1] = stripCentersPO[pi * 2 + 1] * (1 - ANCHOR_W) + globalCentersPO[pi * 2 + 1] * ANCHOR_W;
+      blendedCenters[pi * 2] =
+        stripCentersPO[pi * 2] * (1 - ANCHOR_W) +
+        globalCentersPO[pi * 2] * ANCHOR_W;
+      blendedCenters[pi * 2 + 1] =
+        stripCentersPO[pi * 2 + 1] * (1 - ANCHOR_W) +
+        globalCentersPO[pi * 2 + 1] * ANCHOR_W;
     }
 
     // Re-classify strip pixels using the blended centers
@@ -496,12 +499,16 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
       for (let x = colStart; x < colEnd; x++) {
         const r = stripRG[idx * 2];
         const g = stripRG[idx * 2 + 1];
-        let bestPi = 0, bestD = Infinity;
+        let bestPi = 0,
+          bestD = Infinity;
         for (let pi = 0; pi < 4; pi++) {
           const dr = r - blendedCenters[pi * 2];
           const dg = g - blendedCenters[pi * 2 + 1];
           const d = dr * dr + dg * dg;
-          if (d < bestD) { bestD = d; bestPi = pi; }
+          if (d < bestD) {
+            bestD = d;
+            bestPi = pi;
+          }
         }
         stripLabels[(y * CAM_W + x) * nStrips + s] = bestPi;
         idx++;
@@ -625,12 +632,20 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
   // real DG pixel. Compute the cluster mean B per class, then bidirectional
   // reclassify any pixel whose B clearly contradicts its label.
   {
-    let dgBsum = 0, dgBcount = 0;
-    let warmBsum = 0, warmBcount = 0; // LG + WH
+    let dgBsum = 0,
+      dgBcount = 0;
+    let warmBsum = 0,
+      warmBcount = 0; // LG + WH
     for (let i = 0; i < N; i++) {
       const b = input.data[i * 4 + 2];
-      if (finalLabels[i] === 1) { dgBsum += b; dgBcount++; }
-      if (finalLabels[i] === 2 || finalLabels[i] === 3) { warmBsum += b; warmBcount++; }
+      if (finalLabels[i] === 1) {
+        dgBsum += b;
+        dgBcount++;
+      }
+      if (finalLabels[i] === 2 || finalLabels[i] === 3) {
+        warmBsum += b;
+        warmBcount++;
+      }
     }
     if (dgBcount >= 50 && warmBcount >= 50) {
       const dgMeanB = dgBsum / dgBcount;
@@ -682,7 +697,9 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
           }
         }
         if (dbg) {
-          dbg.log(`[quantize] B reclassify: dgMeanB=${dgMeanB.toFixed(1)} warmMeanB=${warmMeanB.toFixed(1)} flipDg->warm=${flippedFromDg} flipWarm->dg=${flippedToDg}`);
+          dbg.log(
+            `[quantize] B reclassify: dgMeanB=${dgMeanB.toFixed(1)} warmMeanB=${warmMeanB.toFixed(1)} flipDg->warm=${flippedFromDg} flipWarm->dg=${flippedToDg}`,
+          );
         }
       }
     }
@@ -949,38 +966,50 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
   {
     let colFlipped = 0;
     const MIN_PTS = 12;
-    const MIN_SPREAD = 40;   // LG/WH G levels must be this far apart in the column
-    const MIN_DEPTH = 0.6;   // valley must be ≤ this × the smaller peak (a real dip)
+    const MIN_SPREAD = 40; // LG/WH G levels must be this far apart in the column
+    const MIN_DEPTH = 0.6; // valley must be ≤ this × the smaller peak (a real dip)
     // Only the outermost columns: the bright filmstrip frame bleeds light
     // horizontally into them, which (compounded with vertical bleed) is what
     // uniformly lifts their LG pixels into the WH range. Interior columns are
     // left to the global/strip classification (touching them trades errors).
-    const EDGE = process.env.COLVALLEY_EDGE ? Number(process.env.COLVALLEY_EDGE) : 2;
+    const EDGE = 2;
     for (let x = 0; x < CAM_W; x++) {
       if (x >= EDGE && x < CAM_W - EDGE) continue;
       const gv: number[] = [];
       const idx: number[] = [];
       for (let y = 0; y < CAM_H; y++) {
         const i = y * CAM_W + x;
-        if (finalLabels[i] === 2 || finalLabels[i] === 3) { gv.push(flatRG[i * 2 + 1]); idx.push(i); }
+        if (finalLabels[i] === 2 || finalLabels[i] === 3) {
+          gv.push(flatRG[i * 2 + 1]);
+          idx.push(i);
+        }
       }
       if (gv.length < MIN_PTS) continue;
-      let lo = Infinity, hi = -Infinity;
-      for (const g of gv) { if (g < lo) lo = g; if (g > hi) hi = g; }
+      let lo = Infinity,
+        hi = -Infinity;
+      for (const g of gv) {
+        if (g < lo) lo = g;
+        if (g > hi) hi = g;
+      }
       if (hi - lo < MIN_SPREAD) continue;
       const nb = Math.round(hi - lo) + 1;
       const hist = new Array<number>(nb).fill(0);
-      for (const g of gv) hist[Math.min(nb - 1, Math.max(0, Math.round(g - lo)))]++;
+      for (const g of gv)
+        hist[Math.min(nb - 1, Math.max(0, Math.round(g - lo)))]++;
       const sm = gaussianFilter1d(hist, Math.max(2, (hi - lo) / 12));
       // Tallest peak, then the tallest peak separated from it by a dip.
-      let p1 = 0; for (let k = 1; k < nb; k++) if (sm[k] > sm[p1]) p1 = k;
-      let p2 = -1; for (let k = 0; k < nb; k++) {
+      let p1 = 0;
+      for (let k = 1; k < nb; k++) if (sm[k] > sm[p1]) p1 = k;
+      let p2 = -1;
+      for (let k = 0; k < nb; k++) {
         if (Math.abs(k - p1) < (hi - lo) / 6) continue;
         if (p2 < 0 || sm[k] > sm[p2]) p2 = k;
       }
       if (p2 < 0) continue;
-      const a = Math.min(p1, p2), b = Math.max(p1, p2);
-      let valley = a; for (let k = a + 1; k <= b; k++) if (sm[k] < sm[valley]) valley = k;
+      const a = Math.min(p1, p2),
+        b = Math.max(p1, p2);
+      let valley = a;
+      for (let k = a + 1; k <= b; k++) if (sm[k] < sm[valley]) valley = k;
       const peakMin = Math.min(sm[p1], sm[p2]);
       if (peakMin <= 0 || sm[valley] > MIN_DEPTH * peakMin) continue; // not clearly bimodal
       // Only act when the column's lower (LG) mode is LIFTED above the global
@@ -992,11 +1021,16 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
       const thr = lo + valley;
       for (let j = 0; j < idx.length; j++) {
         const want = gv[j] < thr ? 2 : 3;
-        if (want !== finalLabels[idx[j]]) { finalLabels[idx[j]] = want; colFlipped++; }
+        if (want !== finalLabels[idx[j]]) {
+          finalLabels[idx[j]] = want;
+          colFlipped++;
+        }
       }
     }
     if (dbg && colFlipped > 0) {
-      dbg.log(`[quantize] per-column LG/WH valley: ${colFlipped} pixels reclassified`);
+      dbg.log(
+        `[quantize] per-column LG/WH valley: ${colFlipped} pixels reclassified`,
+      );
     }
   }
 
@@ -1020,7 +1054,7 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
   // per-column step (3f). Net effect on the reference corpora: tier-1
   // normal unchanged, full slightly improved, self-consistency improved.
   {
-    const RADIUS = process.env.LOCALWH_RADIUS ? Number(process.env.LOCALWH_RADIUS) : 6;
+    const RADIUS = 6;
     const MIN_WARM = 24;
     const MIN_SPREAD = 45;  // local warm-G range must show real LG/WH separation
     const MIN_DEPTH = 0.6;  // valley ≤ this × the smaller mode (a genuine dip)
@@ -1132,8 +1166,8 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
         // Warp-R cut at the midpoint of the DG/LG warp centroids = classify
         // by nearest warp centroid (the natural boundary in the clean
         // pre-correct space). BK-neighbour floor of 3 keeps false flips ~zero.
-        const FRAC = process.env.DOT_FRAC ? Number(process.env.DOT_FRAC) : 0.5;
-        const BKMIN = process.env.DOT_BK ? Number(process.env.DOT_BK) : 3;
+        const FRAC = 0.5;
+        const BKMIN = 3;
         const warpCut = warpDgR + (warpLgR - warpDgR) * FRAC;
         const bCut = (dgMeanB + lgMeanB) / 2;
         for (let cy = 0; cy < CAM_H; cy++) {
@@ -1194,13 +1228,29 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
       ]),
       stripEnsemble: { strips: nStrips, changed: stripChanged },
       valleyRefinement: {
-        threshold: valleyThreshold === null ? null : Number(valleyThreshold.toFixed(2)),
+        threshold:
+          valleyThreshold === null ? null : Number(valleyThreshold.toFixed(2)),
         changed: valleyChanged,
       },
       counts: {
-        afterGlobalKmeans: { BK: globalCounts[0], DG: globalCounts[1], LG: globalCounts[2], WH: globalCounts[3] },
-        afterStripEnsemble: { BK: stripCounts[0], DG: stripCounts[1], LG: stripCounts[2], WH: stripCounts[3] },
-        final: { BK: finalCounts[0], DG: finalCounts[1], LG: finalCounts[2], WH: finalCounts[3] },
+        afterGlobalKmeans: {
+          BK: globalCounts[0],
+          DG: globalCounts[1],
+          LG: globalCounts[2],
+          WH: globalCounts[3],
+        },
+        afterStripEnsemble: {
+          BK: stripCounts[0],
+          DG: stripCounts[1],
+          LG: stripCounts[2],
+          WH: stripCounts[3],
+        },
+        final: {
+          BK: finalCounts[0],
+          DG: finalCounts[1],
+          LG: finalCounts[2],
+          WH: finalCounts[3],
+        },
       },
     });
 
@@ -1260,7 +1310,9 @@ export function quantize(input: GBImageData, options?: QuantizeOptions): GBImage
 }
 
 /** Count occurrences of palette indices 0..3 in a label array. */
-function countLabels(labels: Int32Array | Uint8Array): [number, number, number, number] {
+function countLabels(
+  labels: Int32Array | Uint8Array,
+): [number, number, number, number] {
   const c: [number, number, number, number] = [0, 0, 0, 0];
   for (let i = 0; i < labels.length; i++) {
     const v = labels[i];
@@ -1307,8 +1359,7 @@ function frameAwareQuantize(
         const dR = R - a.R;
         const dG = G - a.G;
         const dB = B - a.B;
-        const d =
-          SPATIAL_W * (dy * dy + dx * dx) + dR * dR + dG * dG + dB * dB;
+        const d = SPATIAL_W * (dy * dy + dx * dx) + dR * dR + dG * dG + dB * dB;
         for (let k = 0; k < K; k++) {
           if (d < bestD[k]) {
             for (let m = K - 1; m > k; m--) {
@@ -1378,7 +1429,9 @@ function frameAwareQuantize(
             `${n}=(R${cls.R[c][idx].toFixed(0)},G${cls.G[c][idx].toFixed(0)},B${cls.B[c][idx].toFixed(0)})`,
         )
         .join(" ");
-      dbg.log(`[quantize] frame-aware probe ${p.name}@(${p.fy},${p.fx}): ${txt}`);
+      dbg.log(
+        `[quantize] frame-aware probe ${p.name}@(${p.fy},${p.fx}): ${txt}`,
+      );
     }
     dbg.log(
       `[quantize] frame-aware final: ` +

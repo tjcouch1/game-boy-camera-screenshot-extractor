@@ -142,11 +142,13 @@ export function sample(
   //      sampling noise is never amplified.
   //
   // Strengths are physical-bleed parameters calibrated on the reference
-  // corpus; env vars allow re-tuning without a code change.
-  const debleedR = process.env.DEBLEED_R ? Number(process.env.DEBLEED_R) / 100 : 0.25;
-  const debleedG = process.env.DEBLEED_G ? Number(process.env.DEBLEED_G) / 100 : 0;
-  const debleedMargin = process.env.DEBLEED_MARGIN ? Number(process.env.DEBLEED_MARGIN) : 0;
-  const debleedBGate = process.env.DEBLEED_BGATE ? Number(process.env.DEBLEED_BGATE) : 10;
+  // corpus. (These were `process.env`-overridable while tuning in Node, but
+  // the pipeline also runs in the browser where `process` is undefined, so the
+  // calibrated defaults are inlined.)
+  const debleedR = 0.25;
+  const debleedG = 0;
+  const debleedMargin = 0;
+  const debleedBGate = 10;
   if (debleedR > 0 || debleedG > 0) {
     const src = output.data.slice();
     for (let by = 1; by < CAM_H - 1; by++) {
