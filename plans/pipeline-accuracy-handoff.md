@@ -125,11 +125,28 @@ class boundary. Three changes, all measured first:
    third signal — B must agree with the target class (fix 23 / break 0;
    ungated-by-B version breaks 17+). 361→338.
 
-d-1's remaining 338: a top-left corner block where the alternation signal
-is ±4 G (measured vs ±20–40 elsewhere — genuinely erased at capture; no
-sampling window recovers it, would need warp/deconvolution work), plus
-DG→BK (22 px) and DG↔LG edge errors whose warp-G/B signals fully overlap
-the healthy population. Lower rank margins measured net-negative.
+12. **Row-phase correction in `sample` (blur retry).** The "erased" corner
+   alternation was NOT erased — the warp's interior content rows sat up to
+   half a GB pixel below their nominal blocks (edges aligned, interior
+   sagged; spatially varying: +4 warp px in the corner, +2 mid, 0 far).
+   Sampling at the true phase restores the full signal. The phase is
+   observable from content alone: alternation energy vs vertical offset
+   peaks at the true alignment (validated against reference-derived optima
+   on d-1 AND on sharp images, which peak at 0). Estimated on a 4×4 region
+   grid, gated on a ≥15% energy preference, bilinearly interpolated.
+   CRITICAL: the energy estimator can lock onto spurious structure on
+   sharp dark regions (bathhouse bottom: 3 → 131 diffs if applied), so it
+   only runs via a pipeline-level retry in `index.ts`: when the first
+   quantize pass reports `valleyClamped` (the blur signature), sample is
+   re-run with `rowPhase: true` and quantize repeats. Sharp images never
+   take the path. d-1: 338 → 83.
+
+d-1's remaining 83: scattered edge singles (DG→BK ~23 at x/y extremes,
+DG↔LG ~53) plus a small top-right cluster where the phase estimator's
+signal is too weak to fire — all previously measured as overlapping the
+healthy population in every available signal. Note quantize's warp-R/
+warp-G recoveries (3h/3i) still read the warp at NOMINAL rows — feeding
+them the row-phase map is an untried refinement.
 
 ## Established principles / hard-won facts (don't relearn these)
 

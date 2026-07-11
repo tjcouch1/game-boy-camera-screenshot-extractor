@@ -45,6 +45,13 @@ export interface QuantizeOptions {
   warped?: GBImageData;
   scale?: number;
   debug?: DebugCollector;
+  /**
+   * Optional out-param: quantize sets flags the orchestrator can react to.
+   * `valleyClamped` = the LG/WH G-valley landed implausibly high (the
+   * blur-filled-gap signature) — the caller may re-run `sample` with
+   * row-phase correction and quantize again.
+   */
+  stats?: { valleyClamped?: boolean };
 }
 
 // ─── RGB palette matching the Python COLOR_PALETTE_RGB ───
@@ -792,6 +799,7 @@ export function quantize(
       gThresh = midCG + 10;
       valleyClamped = true;
     }
+    if (options?.stats) options.stats.valleyClamped = valleyClamped;
     valleyThreshold = gThresh;
 
     // Apply threshold to LG/WH pixels with high R

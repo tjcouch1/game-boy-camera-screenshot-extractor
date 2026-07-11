@@ -6,6 +6,15 @@ export interface SampleOptions {
   method?: "mean" | "median"; // kept for API compat; internally always uses mean (matching Python)
   marginH?: number; // ignored; replaced by subpixel col offsets
   marginV?: number;
+  /**
+   * Enable content-driven vertical row-phase correction. Only safe on images
+   * showing the blur-filled-gap signature (quantize's `valleyClamped` flag) —
+   * on sharp images the alternation-energy estimator can lock onto spurious
+   * structure (measured: bathhouse-1 bottom, 3 → 131 diffs). The orchestrator
+   * re-runs sample with this enabled when the first quantize pass reports the
+   * signature.
+   */
+  rowPhase?: boolean;
   debug?: DebugCollector;
 }
 
@@ -46,6 +55,117 @@ export function sample(
   const innerStart = 1;
   const innerEnd = scale - 1;
   const innerW = innerEnd - innerStart;
+
+  // ── Row-phase estimation ──
+  //
+  // The warp aligns the frame EDGES, but interior content rows can sit a few
+  // warp-pixels above/below their nominal block rows (lens distortion and
+  // blur pull the interior without moving the edges — measured up to half a
+  // GB pixel on a heavily blurred photo, varying spatially). Sampling a
+  // block at the wrong row phase mixes adjacent GB rows and crushes the
+  // vertical dither contrast that classification depends on.
+  //
+  // The correct phase is observable from content alone: at the TRUE row
+  // alignment, vertical alternation energy (how much each sampled row
+  // differs from its vertical neighbours) is maximal — misphased sampling
+  // averages adjacent GB rows together and flattens it. Estimate the best
+  // vertical offset per coarse region (4×4 grid), gated on the energy
+  // preference being decisive (≥15% over offset 0 — sharp, well-aligned
+  // images measure within ±8% of flat, so they are untouched), then
+  // bilinearly interpolate per block.
+  const ROWPHASE_ENABLED = options?.rowPhase ?? false;
+  const GRID_X = 4, GRID_Y = 4;
+  const OFF_MIN = -3, OFF_MAX = 4;
+  const RATIO_GATE = 1.15;
+  const regionOffset = new Float32Array(GRID_X * GRID_Y);
+  if (ROWPHASE_ENABLED) {
+    const gLoE = innerStart + Math.floor(innerW / 3);
+    const gHiE = innerStart + 2 * Math.floor(innerW / 3);
+    const nOff = OFF_MAX - OFF_MIN + 1;
+    // blockG[off][pi] — mean G of block pi sampled at vertical offset off
+    const blockG = new Float32Array(nOff * CAM_W * CAM_H);
+    for (let off = OFF_MIN; off <= OFF_MAX; off++) {
+      const base = (off - OFF_MIN) * CAM_W * CAM_H;
+      for (let by = 0; by < CAM_H; by++) {
+        const yy1 = Math.max(0, by * scale + vMargin + off);
+        const yy2 = Math.min(input.height, (by + 1) * scale - vMargin + off);
+        for (let bx = 0; bx < CAM_W; bx++) {
+          const x0 = bx * scale;
+          let s = 0, c = 0;
+          for (let y = yy1; y < yy2; y++) {
+            const rowBase = y * input.width;
+            for (let dx = gLoE; dx < gHiE; dx++) {
+              s += input.data[(rowBase + x0 + dx) * 4 + 1];
+              c++;
+            }
+          }
+          blockG[base + by * CAM_W + bx] = c > 0 ? s / c : 0;
+        }
+      }
+    }
+    const regH = Math.ceil(CAM_H / GRID_Y);
+    const regW = Math.ceil(CAM_W / GRID_X);
+    for (let gy = 0; gy < GRID_Y; gy++) {
+      for (let gx = 0; gx < GRID_X; gx++) {
+        const energies = new Array<number>(nOff).fill(0);
+        for (let oi = 0; oi < nOff; oi++) {
+          const base = oi * CAM_W * CAM_H;
+          let e = 0, n = 0;
+          const yA = Math.max(1, gy * regH);
+          const yB = Math.min(CAM_H - 1, (gy + 1) * regH);
+          const xA = gx * regW;
+          const xB = Math.min(CAM_W, (gx + 1) * regW);
+          for (let by = yA; by < yB; by++) {
+            for (let bx = xA; bx < xB; bx++) {
+              const i = base + by * CAM_W + bx;
+              e += Math.abs(
+                blockG[i] - (blockG[i - CAM_W] + blockG[i + CAM_W]) / 2,
+              );
+              n++;
+            }
+          }
+          energies[oi] = n > 0 ? e / n : 0;
+        }
+        let best = 0;
+        for (let oi = 1; oi < nOff; oi++) {
+          if (energies[oi] > energies[best]) best = oi;
+        }
+        const e0 = energies[-OFF_MIN];
+        const off = best + OFF_MIN;
+        regionOffset[gy * GRID_X + gx] =
+          off !== 0 && e0 > 0 && energies[best] >= RATIO_GATE * e0 ? off : 0;
+      }
+    }
+    if (dbg) {
+      const nz: string[] = [];
+      for (let gy = 0; gy < GRID_Y; gy++) {
+        for (let gx = 0; gx < GRID_X; gx++) {
+          const v = regionOffset[gy * GRID_X + gx];
+          if (v !== 0) nz.push(`(${gx},${gy})=${v}`);
+        }
+      }
+      if (nz.length) {
+        dbg.log(`[sample] row-phase offsets (regions): ${nz.join(" ")}`);
+      }
+    }
+  }
+  // Per-block vertical offset via bilinear interpolation of region centers.
+  const rowOffsetAt = (bx: number, by: number): number => {
+    if (!ROWPHASE_ENABLED) return 0;
+    const regH = Math.ceil(CAM_H / GRID_Y);
+    const regW = Math.ceil(CAM_W / GRID_X);
+    const fx = Math.max(0, Math.min(GRID_X - 1, (bx - regW / 2) / regW));
+    const fy = Math.max(0, Math.min(GRID_Y - 1, (by - regH / 2) / regH));
+    const x0 = Math.floor(fx), y0 = Math.floor(fy);
+    const x1 = Math.min(GRID_X - 1, x0 + 1), y1i = Math.min(GRID_Y - 1, y0 + 1);
+    const tx = fx - x0, ty = fy - y0;
+    const v =
+      regionOffset[y0 * GRID_X + x0] * (1 - tx) * (1 - ty) +
+      regionOffset[y0 * GRID_X + x1] * tx * (1 - ty) +
+      regionOffset[y1i * GRID_X + x0] * (1 - tx) * ty +
+      regionOffset[y1i * GRID_X + x1] * tx * ty;
+    return Math.round(v);
+  };
 
   const output = createGBImageData(CAM_W, CAM_H);
 
@@ -93,7 +213,11 @@ export function sample(
         gCount = 0,
         bCount = 0;
 
-      for (let y = y1; y < y2; y++) {
+      const rowOff = rowOffsetAt(bx, by);
+      const yy1 = Math.max(0, y1 + rowOff);
+      const yy2 = Math.min(input.height, y2 + rowOff);
+
+      for (let y = yy1; y < yy2; y++) {
         const rowBase = y * input.width;
         for (let dx = rLo; dx < rHi; dx++) {
           rSum += input.data[(rowBase + x0 + dx) * 4];

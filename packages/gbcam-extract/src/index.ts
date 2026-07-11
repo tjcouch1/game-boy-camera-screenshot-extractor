@@ -78,16 +78,36 @@ export async function processPicture(
   await onProgress?.("crop", 100);
 
   await onProgress?.("sample", 0);
-  const sampled = sample(cropped, { scale, debug: collector });
+  let sampled = sample(cropped, { scale, debug: collector });
   await onProgress?.("sample", 100);
 
   await onProgress?.("quantize", 0);
-  const quantized = quantize(sampled, {
+  const stats: { valleyClamped?: boolean } = {};
+  let quantized = quantize(sampled, {
     corrected,
     warped,
     scale,
     debug: collector,
+    stats,
   });
+  // Blur retry: when quantize reports the blur-filled-gap signature (the
+  // LG/WH G-valley landed implausibly high), the image's content rows are
+  // likely also vertically misphased — re-run sample with content-driven
+  // row-phase correction and quantize again. Sharp images never take this
+  // path, so it cannot regress them; on the blurred d-1 it cuts the diff
+  // count by another ~4x.
+  if (stats.valleyClamped) {
+    collector?.log(
+      "[pipeline] blur signature detected (clamped G-valley) — re-running sample with row-phase correction",
+    );
+    sampled = sample(cropped, { scale, rowPhase: true, debug: collector });
+    quantized = quantize(sampled, {
+      corrected,
+      warped,
+      scale,
+      debug: collector,
+    });
+  }
   await onProgress?.("quantize", 100);
 
   const result: PipelineResult = { grayscale: quantized };
