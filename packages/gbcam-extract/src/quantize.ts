@@ -1305,8 +1305,12 @@ export function quantize(
       const dgMeanB = dgBsum / dgN;
       const lgMeanB = lgBsum / lgN;
       // Only meaningful when the warp actually separates DG from LG in R and
-      // DG carries distinctly higher B than LG.
-      if (warpLgR - warpDgR > 40 && dgMeanB - lgMeanB > 20) {
+      // DG carries distinctly higher B than LG. (Guard was 40; lowered to 28
+      // after measuring that the blurrier thing-2/thing-3 photos sit at
+      // 31-35 warp-R separation with the recovery still fix-only there —
+      // the structural gates below carry the precision, the guard only
+      // rejects images where the warp genuinely doesn't separate the modes.)
+      if (warpLgR - warpDgR > 28 && dgMeanB - lgMeanB > 20) {
         // Warp-R cut at the midpoint of the DG/LG warp centroids = classify
         // by nearest warp centroid (the natural boundary in the clean
         // pre-correct space). BK-neighbour floor of 3 keeps false flips ~zero.
@@ -1341,7 +1345,7 @@ export function quantize(
         // warp-R/B cut for a stricter structural gate, so flips still require
         // several independent signatures at once:
         //   T1: nearly enclosed by black (bk ≥ 6) — an LG pixel essentially
-        //       never sits fully inside a black region; warp R below 3/4 of
+        //       never sits fully inside a black region; warp R below 0.8 of
         //       the DG→LG span and B above the LG mean confirm.
         //   T2: on black (bk ≥ 4) with at most 1 DG neighbour (a true sparse
         //       dot has black around it, not DG — LG pixels at DG-region
@@ -1360,9 +1364,12 @@ export function quantize(
               const i = cy * CAM_W + cx;
               if (snap[i] !== 2) continue;
               const f = (warpRcam[i] - warpDgR) / span;
-              if (f >= 0.75) continue;
+              if (f >= 0.8) continue;
+              // B must sit measurably above the LG mean (every verified DG
+              // dot is at ≥ 0.25 of the LG→DG B span; a bright-LG pixel with
+              // an artificially dark warp block sits at ≈ 0).
               const bRel = (input.data[i * 4 + 2] - lgMeanB) / bSpan;
-              if (bRel <= 0) continue;
+              if (bRel <= 0.1) continue;
               let bk = 0;
               let dg = 0;
               for (let dy = -1; dy <= 1; dy++) {
