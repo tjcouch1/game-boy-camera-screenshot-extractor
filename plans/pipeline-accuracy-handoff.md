@@ -61,21 +61,31 @@ to specific test images), while improving normal/full consistency.
 
 ### Added on `pipeline-accuracy-2` (2026-07-10)
 
-5. **`quantize.ts` — palette-colour presence detection.** An image may
-   contain no BK at all (`sample-pictures-private/20260613_134936.jpg`).
-   Forced k=4 splits a present colour and the bijective cluster→palette
-   match assigns real pixels to the absent colour (catastrophic). Now:
-   count pixels whose nearest RG target is each colour; colours with < 24
-   supporters are dropped and k-means runs with k = present colours
-   (global + strips + all downstream loops). Support is 0 for the no-BK
-   image vs ≥ 500 everywhere else — huge margin.
+5. **`quantize.ts` — cluster-assignment validation.** An image may contain
+   (almost) none of a colour (`sample-pictures-private/20260613_134936.jpg`
+   has no BK). Forced k=4 then splits a present colour's cloud and the
+   bijective cluster→palette match assigns real pixels to the missing
+   colour (catastrophic). Now: cluster k=4 as always, then validate each
+   assignment — a cluster whose center is > 3× closer to a *different*
+   palette target than to its assigned one has migrated; drop that colour
+   and re-cluster with k = valid colours. Measured ratios: ≤ 1.01 for every
+   real BK cluster (≤ 2.7 for gradient-shifted warm clusters, e.g.
+   185311's dim WH), 4.8 for the no-BK image's migrated "BK". Deliberately
+   validates the CLUSTER, not a pixel count — a handful of genuine pixels
+   of a colour still anchors a valid warm-started cluster and passes.
+   Individual pixels of a dropped colour stay reachable: nearest-target
+   per-pixel recovery at the end of the pipeline (step 3j) for BK/LG/WH,
+   blueness recovery (change #6) for DG. (First version used a
+   nearest-target support count with a 24-pixel floor; replaced 2026-07-10
+   because a colour with 1-23 real pixels would have been unreachable.)
 6. **`quantize.ts` — fake-DG-cluster dissolution.** With true DG nearly
    absent, the DG cluster migrates into the dim tail of the LG cloud. Real
    DG is blue: DG-labelled mean B sits ≥ 14 above LG's on every image with
    real DG, ≈ 0 for a migrated cluster. On failed validation (sep < 8),
    dissolve the cluster into LG/WH and recover as DG only individually-blue
    warm pixels (B − R ≥ 12). Recovery is warm-only (BK reads blue under the
-   front light).
+   front light). Also serves as DG's per-pixel recovery when the cluster
+   validation (#5) drops DG entirely.
 7. **`quantize.ts` — DG-dot recovery second pass (3h).** Dots with warp R
    just ABOVE the midpoint (f < 0.8) flip too, behind stricter structural
    gates: T1 bk ≥ 6 (fully on black), or T2 bk ≥ 4 AND ≤ 1 DG neighbour

@@ -147,41 +147,43 @@ function bestClusterToPalette(
 }
 
 /**
- * Data-support detection for each palette colour: count the pixels whose
- * nearest RG palette target is that colour. A colour with essentially no
- * nearest-target support does not exist in the image (e.g. a photo of a
- * subject with no black at all), and forcing k-means to produce a cluster
- * for it makes the bijective cluster→palette match assign real pixels of a
- * *present* colour to the absent one — catastrophic mislabelling. Measured
- * across all corpora: every genuinely-present colour has ≥ 100 nearest-target
- * pixels (BK ≥ 500), while the no-BK image has exactly 0, so the threshold
- * below has a wide safety margin on both sides.
+ * Validate a cluster→palette assignment: a cluster assigned to a palette
+ * colour whose center is far more than RATIO× closer to a *different*
+ * palette target is not that colour at all — it's a cluster that migrated
+ * into another colour's cloud because the assigned colour barely exists in
+ * the image (e.g. a photo with no black: the forced 4th cluster splits a
+ * warm cloud and the bijection labels real warm pixels BK). Returns the
+ * palette indices whose clusters failed validation.
+ *
+ * This deliberately tests the CLUSTER, not a pixel count: an image with only
+ * a handful of genuine pixels of a colour still anchors a small warm-started
+ * cluster near that colour's target and passes. Measured across all corpora:
+ * every real cluster has ratio ≤ 1.01 for BK (≤ 2.7 for gradient-shifted
+ * warm clusters), while the no-BK image's migrated "BK" cluster sits at 4.8.
  */
-function detectPresentColors(
-  flatRG: Float32Array,
-  n: number,
+function invalidClusterColors(
+  centersRG: Float32Array,
+  clusterToPalette: Int32Array,
   targetsRG: [number, number][],
-): boolean[] {
-  const MIN_SUPPORT = 24; // ~0.17% of pixels
-  const counts = [0, 0, 0, 0];
-  for (let i = 0; i < n; i++) {
-    const r = flatRG[i * 2];
-    const g = flatRG[i * 2 + 1];
-    let best = 0;
-    let bestD = Infinity;
-    for (let t = 0; t < 4; t++) {
-      const d = (r - targetsRG[t][0]) ** 2 + (g - targetsRG[t][1]) ** 2;
-      if (d < bestD) {
-        bestD = d;
-        best = t;
-      }
+): number[] {
+  const RATIO = 3;
+  const dropped: number[] = [];
+  for (let ci = 0; ci < clusterToPalette.length; ci++) {
+    const pi = clusterToPalette[ci];
+    const cr = centersRG[ci * 2];
+    const cg = centersRG[ci * 2 + 1];
+    const dAssigned = Math.hypot(cr - targetsRG[pi][0], cg - targetsRG[pi][1]);
+    let dOther = Infinity;
+    for (let q = 0; q < 4; q++) {
+      if (q === pi) continue;
+      dOther = Math.min(
+        dOther,
+        Math.hypot(cr - targetsRG[q][0], cg - targetsRG[q][1]),
+      );
     }
-    counts[best]++;
+    if (dAssigned > RATIO * dOther) dropped.push(pi);
   }
-  const present = counts.map((c) => c >= MIN_SUPPORT);
-  // Degenerate safety: k-means below needs at least 2 clusters.
-  if (present.filter(Boolean).length < 2) return [true, true, true, true];
-  return present;
+  return dropped;
 }
 
 /**
@@ -407,32 +409,49 @@ export function quantize(
     flatRG[i * 2 + 1] = input.data[i * 4 + 1];
   }
 
-  // Detect which palette colours actually exist in this image (an image may
-  // legitimately contain no black at all — forcing 4 clusters then splits a
-  // present colour and mislabels a large fraction of the image).
-  const isPresent = detectPresentColors(flatRG, N, targetsRG);
-  const presentPalette: number[] = [];
-  for (let p = 0; p < 4; p++) if (isPresent[p]) presentPalette.push(p);
-  const kPresent = presentPalette.length;
-  if (dbg && kPresent < 4) {
-    dbg.log(
-      `[quantize] absent palette colours (no nearest-target support): ` +
-        ["BK", "DG", "LG", "WH"].filter((_, p) => !isPresent[p]).join(", ") +
-        ` — clustering with k=${kPresent}`,
-    );
-  }
-
-  // ── 1. Global k-means (k = number of present colours) ──
-  const global = runKmeans(
-    flatRG,
-    N,
-    presentPalette.map((p) => INIT_CENTERS_RG[p]),
-  );
-  const clusterToPalette = bestClusterToPalette(
+  // ── 1. Global k-means with cluster-assignment validation ──
+  // Always cluster with k=4 first, then validate that each colour's assigned
+  // cluster is plausibly that colour. An image may legitimately contain
+  // (almost) none of a colour — forcing 4 clusters then splits a present
+  // colour's cloud and the bijective match labels real pixels with the
+  // missing colour. When a cluster fails validation, drop its colour and
+  // re-cluster with k = valid colours. (Individual pixels of a dropped
+  // colour are recovered per-pixel at the end of the pipeline — dropping
+  // the CLUSTER never makes the colour unreachable.)
+  let presentPalette = [0, 1, 2, 3];
+  let global = runKmeans(flatRG, N, INIT_CENTERS_RG);
+  let clusterToPalette = bestClusterToPalette(
     global.centers,
     targetsRG,
     presentPalette,
   );
+  const droppedColors = invalidClusterColors(
+    global.centers,
+    clusterToPalette,
+    targetsRG,
+  );
+  if (droppedColors.length > 0 && 4 - droppedColors.length >= 2) {
+    presentPalette = [0, 1, 2, 3].filter((p) => !droppedColors.includes(p));
+    if (dbg) {
+      dbg.log(
+        `[quantize] cluster validation: ` +
+          droppedColors.map((p) => ["BK", "DG", "LG", "WH"][p]).join(", ") +
+          ` cluster(s) migrated away from their palette target — ` +
+          `re-clustering with k=${presentPalette.length}`,
+      );
+    }
+    global = runKmeans(
+      flatRG,
+      N,
+      presentPalette.map((p) => INIT_CENTERS_RG[p]),
+    );
+    clusterToPalette = bestClusterToPalette(
+      global.centers,
+      targetsRG,
+      presentPalette,
+    );
+  }
+  const kPresent = presentPalette.length;
 
   // Map cluster labels to palette indices
   const labelsFlat = new Int32Array(N);
@@ -681,7 +700,15 @@ export function quantize(
     }
     const refB =
       lgN >= 50 ? lgBsum / lgN : warmN >= 50 ? warmBsum / warmN : null;
-    if (dgN > 0 && refB !== null && dgBsum / dgN - refB < SEP_MIN) {
+    // Fires when the DG cluster's B matches warm (a migrated cluster), and
+    // also when DG had no valid cluster at all (dropped by the assignment
+    // validation above) — the per-pixel blueness recovery below is how
+    // genuinely-blue pixels get their DG label back in that case.
+    const dgFake =
+      refB !== null &&
+      ((dgN > 0 && dgBsum / dgN - refB < SEP_MIN) ||
+        (dgN === 0 && !presentPalette.includes(1)));
+    if (dgFake && refB !== null) {
       const lgR = globalCentersPO[2 * 2];
       const lgG = globalCentersPO[2 * 2 + 1];
       const whR = globalCentersPO[3 * 2];
@@ -711,7 +738,7 @@ export function quantize(
       if (dbg) {
         dbg.log(
           `[quantize] DG cluster failed blueness validation ` +
-            `(dgMeanB=${(dgBsum / dgN).toFixed(1)} refB=${refB.toFixed(1)}): ` +
+            `(dgMeanB=${dgN > 0 ? (dgBsum / dgN).toFixed(1) : "n/a"} refB=${refB.toFixed(1)}): ` +
             `dissolved ${dissolved} px into LG/WH, recovered ${recovered} blue px as DG`,
         );
       }
@@ -1439,6 +1466,45 @@ export function quantize(
       if (dbg && bkFixed > 0) {
         dbg.log(`[quantize] warp-G BK recovery: ${bkFixed} pixels reclassified DG → BK`);
       }
+    }
+  }
+
+  // ── 3j. Per-pixel recovery for colours dropped by cluster validation ──
+  // Dropping a colour's CLUSTER (because it migrated into another colour's
+  // cloud) must never make individual pixels of that colour unreachable: an
+  // image can legitimately contain just a handful of them — too few to
+  // anchor a cluster, still real content. Any pixel whose own RG value is
+  // nearest the dropped colour's palette target gets that label back. By
+  // construction this is a tiny set (if many pixels sat near the target,
+  // the cluster would not have migrated and the colour would not have been
+  // dropped). DG is excluded: its target sits between BK and LG so
+  // nearest-target is not decisive for it — blueness (step 2b) is its
+  // per-pixel recovery instead.
+  for (const p of [0, 2, 3]) {
+    if (presentPalette.includes(p)) continue;
+    let recovered = 0;
+    for (let i = 0; i < N; i++) {
+      const r = flatRG[i * 2];
+      const g = flatRG[i * 2 + 1];
+      let best = 0;
+      let bestD = Infinity;
+      for (let t = 0; t < 4; t++) {
+        const d = (r - targetsRG[t][0]) ** 2 + (g - targetsRG[t][1]) ** 2;
+        if (d < bestD) {
+          bestD = d;
+          best = t;
+        }
+      }
+      if (best === p && finalLabels[i] !== p) {
+        finalLabels[i] = p;
+        recovered++;
+      }
+    }
+    if (dbg && recovered > 0) {
+      dbg.log(
+        `[quantize] dropped-colour recovery: ${recovered} px nearest the ` +
+          `${["BK", "DG", "LG", "WH"][p]} target relabelled ${["BK", "DG", "LG", "WH"][p]}`,
+      );
     }
   }
 
