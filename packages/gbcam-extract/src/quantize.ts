@@ -94,11 +94,12 @@ function gaussianFilter1d(input: number[], sigma: number): number[] {
 }
 
 /**
- * Find all permutations of [0,1,2,3]. Used for cluster-to-palette matching.
+ * Find all permutations of the given array. Used for cluster-to-palette
+ * matching (k ≤ 4 clusters, so at most 24 permutations).
  */
-function permutations4(): number[][] {
+function permutationsOf(items: number[]): number[][] {
   const result: number[][] = [];
-  const arr = [0, 1, 2, 3];
+  const arr = [...items];
   function permute(start: number) {
     if (start === arr.length) {
       result.push([...arr]);
@@ -115,19 +116,22 @@ function permutations4(): number[][] {
 }
 
 /**
- * Find the best permutation mapping clusters -> palette indices
- * that minimizes total RG Euclidean distance.
+ * Find the best assignment of clusters -> palette indices (restricted to the
+ * given present palette indices) that minimizes total RG Euclidean distance.
+ * `centersRG` holds k = presentPalette.length cluster centers; the result maps
+ * cluster index -> palette index.
  */
 function bestClusterToPalette(
   centersRG: Float32Array,
   targetsRG: [number, number][],
+  presentPalette: number[],
 ): Int32Array {
-  const perms = permutations4();
+  const perms = permutationsOf(presentPalette);
   let bestPerm: number[] = perms[0];
   let bestCost = Infinity;
   for (const perm of perms) {
     let cost = 0;
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < perm.length; i++) {
       const cr = centersRG[i * 2];
       const cg = centersRG[i * 2 + 1];
       const tr = targetsRG[perm[i]][0];
@@ -140,6 +144,44 @@ function bestClusterToPalette(
     }
   }
   return new Int32Array(bestPerm);
+}
+
+/**
+ * Data-support detection for each palette colour: count the pixels whose
+ * nearest RG palette target is that colour. A colour with essentially no
+ * nearest-target support does not exist in the image (e.g. a photo of a
+ * subject with no black at all), and forcing k-means to produce a cluster
+ * for it makes the bijective cluster→palette match assign real pixels of a
+ * *present* colour to the absent one — catastrophic mislabelling. Measured
+ * across all corpora: every genuinely-present colour has ≥ 100 nearest-target
+ * pixels (BK ≥ 500), while the no-BK image has exactly 0, so the threshold
+ * below has a wide safety margin on both sides.
+ */
+function detectPresentColors(
+  flatRG: Float32Array,
+  n: number,
+  targetsRG: [number, number][],
+): boolean[] {
+  const MIN_SUPPORT = 24; // ~0.17% of pixels
+  const counts = [0, 0, 0, 0];
+  for (let i = 0; i < n; i++) {
+    const r = flatRG[i * 2];
+    const g = flatRG[i * 2 + 1];
+    let best = 0;
+    let bestD = Infinity;
+    for (let t = 0; t < 4; t++) {
+      const d = (r - targetsRG[t][0]) ** 2 + (g - targetsRG[t][1]) ** 2;
+      if (d < bestD) {
+        bestD = d;
+        best = t;
+      }
+    }
+    counts[best]++;
+  }
+  const present = counts.map((c) => c >= MIN_SUPPORT);
+  // Degenerate safety: k-means below needs at least 2 clusters.
+  if (present.filter(Boolean).length < 2) return [true, true, true, true];
+  return present;
 }
 
 /**
@@ -200,7 +242,8 @@ function runKmeans3D(
 
 /**
  * Run cv.kmeans on an Nx2 float32 sample set with warm initialisation.
- * Returns { labels: Int32Array(N), centers: Float32Array(4*2) }
+ * The cluster count k is taken from the number of init centers (2–4).
+ * Returns { labels: Int32Array(N), centers: Float32Array(k*2) }
  */
 function runKmeans(
   samplesRG: Float32Array,
@@ -208,6 +251,10 @@ function runKmeans(
   initCenters: [number, number][] | Float32Array,
 ): { labels: Int32Array; centers: Float32Array } {
   const cv = getCV();
+  const k =
+    initCenters instanceof Float32Array
+      ? initCenters.length / 2
+      : initCenters.length;
   return withMats((track) => {
     // Build Nx2 samples Mat
     const samplesMat = track(new cv.Mat(n, 2, cv.CV_32F));
@@ -217,18 +264,7 @@ function runKmeans(
     const labelsMat = track(new cv.Mat(n, 1, cv.CV_32S));
 
     // Build centers output
-    const centersMat = track(new cv.Mat(4, 2, cv.CV_32F));
-
-    // Build initial centers for warm start
-    const initMat = track(new cv.Mat(4, 2, cv.CV_32F));
-    if (initCenters instanceof Float32Array) {
-      initMat.data32F.set(initCenters);
-    } else {
-      for (let i = 0; i < 4; i++) {
-        initMat.data32F[i * 2] = initCenters[i][0];
-        initMat.data32F[i * 2 + 1] = initCenters[i][1];
-      }
-    }
+    const centersMat = track(new cv.Mat(k, 2, cv.CV_32F));
 
     // Use warm start: set labels from initial centers via nearest assignment
     // then use KMEANS_USE_INITIAL_LABELS
@@ -240,19 +276,19 @@ function runKmeans(
       let bestK = 0;
       let bestD = Infinity;
       const ic = initCenters instanceof Float32Array ? initCenters : null;
-      for (let k = 0; k < 4; k++) {
+      for (let ki = 0; ki < k; ki++) {
         let cr: number, cg: number;
         if (ic) {
-          cr = ic[k * 2];
-          cg = ic[k * 2 + 1];
+          cr = ic[ki * 2];
+          cg = ic[ki * 2 + 1];
         } else {
-          cr = (initCenters as [number, number][])[k][0];
-          cg = (initCenters as [number, number][])[k][1];
+          cr = (initCenters as [number, number][])[ki][0];
+          cg = (initCenters as [number, number][])[ki][1];
         }
         const d = (r - cr) ** 2 + (g - cg) ** 2;
         if (d < bestD) {
           bestD = d;
-          bestK = k;
+          bestK = ki;
         }
       }
       labelsMat.data32S[i] = bestK;
@@ -266,7 +302,7 @@ function runKmeans(
 
     cv.kmeans(
       samplesMat,
-      4,
+      k,
       labelsMat,
       criteria,
       1, // attempts=1 since we use initial labels
@@ -371,9 +407,32 @@ export function quantize(
     flatRG[i * 2 + 1] = input.data[i * 4 + 1];
   }
 
-  // ── 1. Global k-means ──
-  const global = runKmeans(flatRG, N, INIT_CENTERS_RG);
-  const clusterToPalette = bestClusterToPalette(global.centers, targetsRG);
+  // Detect which palette colours actually exist in this image (an image may
+  // legitimately contain no black at all — forcing 4 clusters then splits a
+  // present colour and mislabels a large fraction of the image).
+  const isPresent = detectPresentColors(flatRG, N, targetsRG);
+  const presentPalette: number[] = [];
+  for (let p = 0; p < 4; p++) if (isPresent[p]) presentPalette.push(p);
+  const kPresent = presentPalette.length;
+  if (dbg && kPresent < 4) {
+    dbg.log(
+      `[quantize] absent palette colours (no nearest-target support): ` +
+        ["BK", "DG", "LG", "WH"].filter((_, p) => !isPresent[p]).join(", ") +
+        ` — clustering with k=${kPresent}`,
+    );
+  }
+
+  // ── 1. Global k-means (k = number of present colours) ──
+  const global = runKmeans(
+    flatRG,
+    N,
+    presentPalette.map((p) => INIT_CENTERS_RG[p]),
+  );
+  const clusterToPalette = bestClusterToPalette(
+    global.centers,
+    targetsRG,
+    presentPalette,
+  );
 
   // Map cluster labels to palette indices
   const labelsFlat = new Int32Array(N);
@@ -386,7 +445,7 @@ export function quantize(
   for (let pi = 0; pi < 4; pi++) {
     let cr = targetsRG[pi][0];
     let cg = targetsRG[pi][1];
-    for (let ci = 0; ci < 4; ci++) {
+    for (let ci = 0; ci < kPresent; ci++) {
       if (clusterToPalette[ci] === pi) {
         cr = global.centers[ci * 2];
         cg = global.centers[ci * 2 + 1];
@@ -419,7 +478,7 @@ export function quantize(
   const globalCentersPO = new Float32Array(4 * 2);
   for (let pi = 0; pi < 4; pi++) {
     let found = false;
-    for (let ci = 0; ci < 4; ci++) {
+    for (let ci = 0; ci < kPresent; ci++) {
       if (clusterToPalette[ci] === pi) {
         globalCentersPO[pi * 2] = global.centers[ci * 2];
         globalCentersPO[pi * 2 + 1] = global.centers[ci * 2 + 1];
@@ -461,8 +520,17 @@ export function quantize(
       }
     }
 
-    const stripResult = runKmeans(stripRG, sN, globalCentersPO);
-    const c2p = bestClusterToPalette(stripResult.centers, targetsRG);
+    const stripInit = new Float32Array(kPresent * 2);
+    for (let ki = 0; ki < kPresent; ki++) {
+      stripInit[ki * 2] = globalCentersPO[presentPalette[ki] * 2];
+      stripInit[ki * 2 + 1] = globalCentersPO[presentPalette[ki] * 2 + 1];
+    }
+    const stripResult = runKmeans(stripRG, sN, stripInit);
+    const c2p = bestClusterToPalette(
+      stripResult.centers,
+      targetsRG,
+      presentPalette,
+    );
 
     // Build palette-ordered strip centers, then blend toward global centers.
     // This anchors per-strip drift (which over-classifies borderline pixels)
@@ -472,7 +540,7 @@ export function quantize(
     const stripCentersPO = new Float32Array(4 * 2);
     for (let pi = 0; pi < 4; pi++) {
       let ci = -1;
-      for (let cj = 0; cj < 4; cj++) {
+      for (let cj = 0; cj < kPresent; cj++) {
         if (c2p[cj] === pi) {
           ci = cj;
           break;
@@ -499,9 +567,9 @@ export function quantize(
       for (let x = colStart; x < colEnd; x++) {
         const r = stripRG[idx * 2];
         const g = stripRG[idx * 2 + 1];
-        let bestPi = 0,
+        let bestPi = presentPalette[0],
           bestD = Infinity;
-        for (let pi = 0; pi < 4; pi++) {
+        for (const pi of presentPalette) {
           const dr = r - blendedCenters[pi * 2];
           const dg = g - blendedCenters[pi * 2 + 1];
           const d = dr * dr + dg * dg;
@@ -577,11 +645,84 @@ export function quantize(
     );
   }
 
+  // ── 2b. Fake-DG-cluster validation (blueness check) ──
+  // When true DG is nearly absent from the image, the DG cluster of the RG
+  // k-means migrates into the dim tail of the LG cloud — RG alone cannot
+  // tell "dim warm" from "true DG". But real DG is BLUE on screen (#9494FF):
+  // DG-labelled pixels' mean B sits well above LG's on every reference and
+  // held-out image with real DG (sep ≥ 14, typically 21–61), while a
+  // migrated cluster's B matches LG's (sep ≈ 0). If separation is missing,
+  // dissolve the cluster: reassign its pixels to LG/WH by RG distance and
+  // recover as DG only the pixels that are individually blue
+  // (B − R ≥ 12 — warm content always has R far above B).
+  {
+    const SEP_MIN = 8;
+    const BLUE_MIN = 12;
+    let dgBsum = 0,
+      dgN = 0,
+      lgBsum = 0,
+      lgN = 0,
+      warmBsum = 0,
+      warmN = 0;
+    for (let i = 0; i < N; i++) {
+      const b = input.data[i * 4 + 2];
+      if (finalLabels[i] === 1) {
+        dgBsum += b;
+        dgN++;
+      } else if (finalLabels[i] === 2) {
+        lgBsum += b;
+        lgN++;
+        warmBsum += b;
+        warmN++;
+      } else if (finalLabels[i] === 3) {
+        warmBsum += b;
+        warmN++;
+      }
+    }
+    const refB =
+      lgN >= 50 ? lgBsum / lgN : warmN >= 50 ? warmBsum / warmN : null;
+    if (dgN > 0 && refB !== null && dgBsum / dgN - refB < SEP_MIN) {
+      const lgR = globalCentersPO[2 * 2];
+      const lgG = globalCentersPO[2 * 2 + 1];
+      const whR = globalCentersPO[3 * 2];
+      const whG = globalCentersPO[3 * 2 + 1];
+      let dissolved = 0;
+      let recovered = 0;
+      for (let i = 0; i < N; i++) {
+        if (finalLabels[i] === 1) {
+          const r = flatRG[i * 2];
+          const g = flatRG[i * 2 + 1];
+          const dLG = (r - lgR) ** 2 + (g - lgG) ** 2;
+          const dWH = (r - whR) ** 2 + (g - whG) ** 2;
+          finalLabels[i] = dLG <= dWH ? 2 : 3;
+          dissolved++;
+        }
+        // Recover only warm-labelled pixels: BK pixels also read blue under
+        // the front-light tint (B − R ≈ +50 on dark LCD), so an unrestricted
+        // blueness flip would eat real black in a BK-present/DG-absent image.
+        if (
+          (finalLabels[i] === 2 || finalLabels[i] === 3) &&
+          input.data[i * 4 + 2] - flatRG[i * 2] >= BLUE_MIN
+        ) {
+          finalLabels[i] = 1;
+          recovered++;
+        }
+      }
+      if (dbg) {
+        dbg.log(
+          `[quantize] DG cluster failed blueness validation ` +
+            `(dgMeanB=${(dgBsum / dgN).toFixed(1)} refB=${refB.toFixed(1)}): ` +
+            `dissolved ${dissolved} px into LG/WH, recovered ${recovered} blue px as DG`,
+        );
+      }
+    }
+  }
+
   // ── 3. G-valley LG/WH refinement ──
   // Find cluster indices for LG (palette 2) and WH (palette 3)
   let lgClusterIdx = -1;
   let whClusterIdx = -1;
-  for (let ci = 0; ci < 4; ci++) {
+  for (let ci = 0; ci < kPresent; ci++) {
     if (clusterToPalette[ci] === 2) lgClusterIdx = ci;
     if (clusterToPalette[ci] === 3) whClusterIdx = ci;
   }
@@ -743,7 +884,7 @@ export function quantize(
       const b = input.data[i * 4 + 2];
       let dBest = Infinity;
       let dSecond = Infinity;
-      for (let p = 0; p < 4; p++) {
+      for (const p of presentPalette) {
         const d =
           (r - cR3[p]) * (r - cR3[p]) +
           (g - cG3[p]) * (g - cG3[p]) +
@@ -786,7 +927,7 @@ export function quantize(
       const b = input.data[i * 4 + 2];
       let dBest = Infinity;
       let dSecond = Infinity;
-      for (let p = 0; p < 4; p++) {
+      for (const p of presentPalette) {
         const d =
           (r - cR3[p]) * (r - cR3[p]) +
           (g - cG3[p]) * (g - cG3[p]) +
@@ -854,10 +995,10 @@ export function quantize(
       // existing G-valley step handle that. So we only count a palette
       // vote when palBest is BK or DG (where palette is decisive on
       // multiple channels).
-      let palBest = 0;
+      let palBest = presentPalette[0];
       let palBestD = Infinity;
       let palSecond = Infinity;
-      for (let p = 0; p < 4; p++) {
+      for (const p of presentPalette) {
         const dR = r - PAL_R[p];
         const dG = g - PAL_G[p];
         const dB = b - PAL_B[p];
