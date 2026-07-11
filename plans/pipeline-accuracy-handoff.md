@@ -101,6 +101,36 @@ to specific test images), while improving normal/full consistency.
    warp-G fraction < 0.52 AND sample-G fraction < 0.55. Measured: fix 12 /
    break 2, and both breaks are suspected reference errors.
 
+### Added on `pipeline-accuracy-3` (2026-07-10, the blurry d-1 image)
+
+`test-input-private/d-1.jpg` (976 initial diffs, heavy vertical blur)
+exposed a failure mode class: **blur fills inter-class density gaps**, so
+valley/threshold estimators that look for density minima land far from the
+class boundary. Three changes, all measured first:
+
+9. **G-valley sanity clamp.** On every sharp reference the found valley
+   sits +6..+15 above the LG/WH cluster-center midpoint; on d-1 the blur
+   pushed it to +46 (mislabelling ~800 dimmed-WH px as LG). If the valley
+   exceeds midpoint+25, fall back to midpoint+10 (the healthy prior).
+   976→522 on d-1; no-op on every other image by construction.
+10. **Vertical-rank LG/WH (blur mode).** Vertical smear pushes a WH/LG
+   dither into the mixed G band where NO absolute threshold separates the
+   classes — but the alternation survives (LG reads 15–25 G below its
+   vertical WH neighbours, riding the gradient). Near the threshold
+   (±30), classify by vertical ordering (margin 10). Gated on the clamp
+   having fired: on sharp images rank-flips only trade errors (measured
+   0-fix/150-break ungated). 522→361.
+11. **Vertical-rank DG/LG + B gate (blur mode).** Same physics on the
+   DG/LG boundary (separates on R); weaker alternation there needs a
+   third signal — B must agree with the target class (fix 23 / break 0;
+   ungated-by-B version breaks 17+). 361→338.
+
+d-1's remaining 338: a top-left corner block where the alternation signal
+is ±4 G (measured vs ±20–40 elsewhere — genuinely erased at capture; no
+sampling window recovers it, would need warp/deconvolution work), plus
+DG→BK (22 px) and DG↔LG edge errors whose warp-G/B signals fully overlap
+the healthy population. Lower rank margins measured net-negative.
+
 ## Established principles / hard-won facts (don't relearn these)
 
 - **References are dithered.** Isolated single pixels are real content, not

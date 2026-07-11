@@ -756,6 +756,7 @@ export function quantize(
 
   let valleyThreshold: number | null = null;
   let valleyChanged = 0;
+  let valleyClamped = false;
   if (lgClusterIdx >= 0 && whClusterIdx >= 0) {
     const lgCG = global.centers[lgClusterIdx * 2 + 1]; // G component of LG center
     const whCG = global.centers[whClusterIdx * 2 + 1]; // G component of WH center
@@ -768,7 +769,29 @@ export function quantize(
       }
     }
 
-    const gThresh = gValleyThreshold(gHighR, lgCG, whCG);
+    let gThresh = gValleyThreshold(gHighR, lgCG, whCG);
+
+    // Sanity-clamp the valley. On a sharp image the LG and WH G-modes have a
+    // real density gap, and the found valley sits just above the midpoint of
+    // the two cluster centers (measured +6..+15 across every reference
+    // image). Heavy blur fills the gap with partially-mixed WH pixels, so
+    // the density minimum migrates to the top of the mixing band — far above
+    // the class boundary — and the "valley" then mislabels the whole dimmed
+    // WH population as LG (measured +46 on the blurry d-1, costing ~800 px).
+    // When the valley lands implausibly high, fall back to the empirical
+    // prior instead: midpoint + 10 (the center of the healthy range).
+    const midCG = (lgCG + whCG) / 2;
+    if (gThresh > midCG + 25) {
+      if (dbg) {
+        dbg.log(
+          `[quantize] G-valley ${gThresh.toFixed(1)} is implausibly far above ` +
+            `the LG/WH center midpoint ${midCG.toFixed(1)} (blur-filled gap) — ` +
+            `falling back to midpoint+10`,
+        );
+      }
+      gThresh = midCG + 10;
+      valleyClamped = true;
+    }
     valleyThreshold = gThresh;
 
     // Apply threshold to LG/WH pixels with high R
@@ -1465,6 +1488,103 @@ export function quantize(
       }
       if (dbg && bkFixed > 0) {
         dbg.log(`[quantize] warp-G BK recovery: ${bkFixed} pixels reclassified DG → BK`);
+      }
+    }
+  }
+
+  // ── 3k. Vertical-rank LG/WH refinement for blur-smeared dither ──
+  // Heavy vertical blur smears a WH/LG dither into uniform columns: the
+  // absolute G of every pixel in the column lands in the mixed band between
+  // the classes, where no threshold — global or local-window — can separate
+  // them (the G-valley clamp firing above is the image-level signature of
+  // exactly this). But the blur only attenuates the alternation, it doesn't
+  // erase it: a true LG pixel still reads 15–25 G BELOW its vertical WH
+  // neighbours, riding whatever gradient the column has. So near the
+  // threshold, classify by local vertical ordering instead of absolute G: a
+  // warm pixel clearly below both warm vertical neighbours is LG, clearly
+  // above both is WH. Gated on the clamp having fired: on sharp images the
+  // threshold is already right and rank-flips near it only trade errors
+  // (measured fix 0 / break ~150 across all sharp references), while on the
+  // blurred d-1 this fixes 182 / breaks 21.
+  if (valleyClamped && valleyThreshold !== null) {
+    const BAND = 30; // only pixels this close to the threshold (the mixed band)
+    const MARGIN = 10; // must be clearly below/above both vertical neighbours
+    const snap = finalLabels.slice();
+    let rankFlipped = 0;
+    for (let y = 1; y < CAM_H - 1; y++) {
+      for (let x = 0; x < CAM_W; x++) {
+        const i = y * CAM_W + x;
+        const lbl = snap[i];
+        if (lbl !== 2 && lbl !== 3) continue;
+        const g = flatRG[i * 2 + 1];
+        if (Math.abs(g - valleyThreshold) >= BAND) continue;
+        const up = snap[i - CAM_W];
+        const dn = snap[i + CAM_W];
+        if ((up !== 2 && up !== 3) || (dn !== 2 && dn !== 3)) continue;
+        const gu = flatRG[(i - CAM_W) * 2 + 1];
+        const gd = flatRG[(i + CAM_W) * 2 + 1];
+        let want = lbl;
+        if (g <= Math.min(gu, gd) - MARGIN) want = 2;
+        else if (g >= Math.max(gu, gd) + MARGIN) want = 3;
+        if (want !== finalLabels[i]) {
+          finalLabels[i] = want;
+          rankFlipped++;
+        }
+      }
+    }
+    if (dbg && rankFlipped > 0) {
+      dbg.log(
+        `[quantize] vertical-rank LG/WH (blur-smeared dither): ${rankFlipped} pixels reclassified`,
+      );
+    }
+
+    // Same physics on the DG/LG boundary, which separates on R instead of G.
+    // Weaker alternation survives there, so a third signal is required: the
+    // pixel's B must agree with the target class (DG is blue, B above the
+    // DG/LG mean-B midpoint; LG is warm, below). Measured on d-1:
+    // fix 23 / break 0; the un-gated version breaks 17+.
+    {
+      const R_BAND = 25;
+      const R_MARGIN = 10;
+      const dgRC = globalCentersPO[1 * 2];
+      const lgRC = globalCentersPO[2 * 2];
+      const rMid = (dgRC + lgRC) / 2;
+      let dgBsum = 0, dgN = 0, lgBsum = 0, lgN = 0;
+      for (let i = 0; i < N; i++) {
+        if (finalLabels[i] === 1) { dgBsum += input.data[i * 4 + 2]; dgN++; }
+        else if (finalLabels[i] === 2) { lgBsum += input.data[i * 4 + 2]; lgN++; }
+      }
+      if (dgN >= 50 && lgN >= 50) {
+        const bMid = (dgBsum / dgN + lgBsum / lgN) / 2;
+        const snap = finalLabels.slice();
+        let rankFlippedDG = 0;
+        for (let y = 1; y < CAM_H - 1; y++) {
+          for (let x = 0; x < CAM_W; x++) {
+            const i = y * CAM_W + x;
+            const lbl = snap[i];
+            if (lbl !== 1 && lbl !== 2) continue;
+            const r = flatRG[i * 2];
+            if (Math.abs(r - rMid) >= R_BAND) continue;
+            const up = snap[i - CAM_W];
+            const dn = snap[i + CAM_W];
+            if ((up !== 1 && up !== 2) || (dn !== 1 && dn !== 2)) continue;
+            const ru = flatRG[(i - CAM_W) * 2];
+            const rd = flatRG[(i + CAM_W) * 2];
+            const b = input.data[i * 4 + 2];
+            let want = lbl;
+            if (r <= Math.min(ru, rd) - R_MARGIN && b > bMid) want = 1;
+            else if (r >= Math.max(ru, rd) + R_MARGIN && b < bMid) want = 2;
+            if (want !== finalLabels[i]) {
+              finalLabels[i] = want;
+              rankFlippedDG++;
+            }
+          }
+        }
+        if (dbg && rankFlippedDG > 0) {
+          dbg.log(
+            `[quantize] vertical-rank DG/LG (blur-smeared dither): ${rankFlippedDG} pixels reclassified`,
+          );
+        }
       }
     }
   }
