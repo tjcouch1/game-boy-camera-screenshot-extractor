@@ -1272,20 +1272,23 @@ export function quantize(
     const sc = options?.scale ?? Math.round(wq.width / SCREEN_W);
     const m0 = Math.max(1, Math.floor(sc / 4));
     const m1 = Math.max(m0 + 1, Math.ceil((sc * 3) / 4));
-    // Mean warp R over the inner block of each camera pixel.
+    // Mean warp R and G over the inner block of each camera pixel.
     const warpRcam = new Float32Array(N);
+    const warpGcam = new Float32Array(N);
     for (let cy = 0; cy < CAM_H; cy++) {
       for (let cx = 0; cx < CAM_W; cx++) {
         const sx = (cx + FRAME_THICK) * sc;
         const sy = (cy + FRAME_THICK) * sc;
-        let sum = 0, cnt = 0;
+        let sum = 0, sumG = 0, cnt = 0;
         for (let yy = sy + m0; yy < sy + m1; yy++) {
           for (let xx = sx + m0; xx < sx + m1; xx++) {
             sum += wq.data[(yy * wq.width + xx) * 4];
+            sumG += wq.data[(yy * wq.width + xx) * 4 + 1];
             cnt++;
           }
         }
         warpRcam[cy * CAM_W + cx] = cnt > 0 ? sum / cnt : 0;
+        warpGcam[cy * CAM_W + cx] = cnt > 0 ? sumG / cnt : 0;
       }
     }
     // Image-derived warp-R centroids of confidently-labelled DG and LG.
@@ -1331,10 +1334,104 @@ export function quantize(
             dotsFixed++;
           }
         }
+
+        // Second pass: two relaxed tiers for DG dots whose warp R sits just
+        // ABOVE the centroid midpoint (bleed lifts an isolated dot's warp R
+        // toward — but rarely past — the LG mode). Each tier trades a softer
+        // warp-R/B cut for a stricter structural gate, so flips still require
+        // several independent signatures at once:
+        //   T1: nearly enclosed by black (bk ≥ 6) — an LG pixel essentially
+        //       never sits fully inside a black region; warp R below 3/4 of
+        //       the DG→LG span and B above the LG mean confirm.
+        //   T2: on black (bk ≥ 4) with at most 1 DG neighbour (a true sparse
+        //       dot has black around it, not DG — LG pixels at DG-region
+        //       boundaries fail this) + warp R below 0.6 span + B clearly
+        //       DG-shifted.
+        // Measured on all 21 reference images (tier-1 normal + full +
+        // private): fixes 17 LG→DG errors, breaks 0.
+        // Neighbour counts come from a snapshot after the first pass so
+        // results don't depend on scan order.
+        {
+          const snap = finalLabels.slice();
+          const span = warpLgR - warpDgR;
+          const bSpan = dgMeanB - lgMeanB;
+          for (let cy = 0; cy < CAM_H; cy++) {
+            for (let cx = 0; cx < CAM_W; cx++) {
+              const i = cy * CAM_W + cx;
+              if (snap[i] !== 2) continue;
+              const f = (warpRcam[i] - warpDgR) / span;
+              if (f >= 0.75) continue;
+              const bRel = (input.data[i * 4 + 2] - lgMeanB) / bSpan;
+              if (bRel <= 0) continue;
+              let bk = 0;
+              let dg = 0;
+              for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                  if (!dx && !dy) continue;
+                  const yy = cy + dy, xx = cx + dx;
+                  if (yy < 0 || xx < 0 || yy >= CAM_H || xx >= CAM_W) continue;
+                  const l = snap[yy * CAM_W + xx];
+                  if (l === 0) bk++;
+                  else if (l === 1) dg++;
+                }
+              }
+              const t1 = bk >= 6;
+              const t2 = bk >= 4 && dg <= 1 && f < 0.6 && bRel > 0.1;
+              if (t1 || t2) {
+                finalLabels[i] = 1;
+                dotsFixed++;
+              }
+            }
+          }
+        }
       }
     }
     if (dbg && dotsFixed > 0) {
       dbg.log(`[quantize] warp-R DG-dot recovery: ${dotsFixed} pixels reclassified`);
+    }
+
+    // ── 3i. Recover BK pixels mislabelled DG using the pre-correct warp G.
+    // The same correct-gain amplification that lifts DG's R into LG also
+    // lifts a dim BK pixel's R/B into the DG range (worst in the dimmest
+    // screen corners), while its G stays at black level. The pre-correct
+    // warp G still separates BK (low G) from DG (mid G) decisively: across
+    // every reference image, true-DG pixels sit at warp-G fraction ≥ 0.74 of
+    // the BK→DG span (p1), while mislabelled-BK pixels sit at ≤ 0.50. Two
+    // signals must agree: warp-G fraction < 0.52 AND sample G below ~0.55 of
+    // the BK→DG sample-G span (guards interior dim-DG whose sample G is
+    // clearly DG-level). Measured on all 21 reference images: fixes 12,
+    // breaks 2 (both suspected reference errors in the same dither corner).
+    {
+      let bkW = 0, bkS = 0, bkN = 0, dgW = 0, dgS = 0, dgN2 = 0;
+      for (let i = 0; i < N; i++) {
+        if (finalLabels[i] === 0) {
+          bkW += warpGcam[i]; bkS += input.data[i * 4 + 1]; bkN++;
+        } else if (finalLabels[i] === 1) {
+          dgW += warpGcam[i]; dgS += input.data[i * 4 + 1]; dgN2++;
+        }
+      }
+      let bkFixed = 0;
+      if (bkN >= 20 && dgN2 >= 20) {
+        const wBK = bkW / bkN, wDG = dgW / dgN2;
+        const sBK = bkS / bkN, sDG = dgS / dgN2;
+        // Only meaningful when the warp actually separates BK from DG in G.
+        if (wDG - wBK > 40 && sDG - sBK > 40) {
+          const FG_CUT = 0.52;
+          const GREL_CUT = 0.55;
+          for (let i = 0; i < N; i++) {
+            if (finalLabels[i] !== 1) continue;
+            const fG = (warpGcam[i] - wBK) / (wDG - wBK);
+            if (fG >= FG_CUT) continue;
+            const gRel = (input.data[i * 4 + 1] - sBK) / (sDG - sBK);
+            if (gRel >= GREL_CUT) continue;
+            finalLabels[i] = 0;
+            bkFixed++;
+          }
+        }
+      }
+      if (dbg && bkFixed > 0) {
+        dbg.log(`[quantize] warp-G BK recovery: ${bkFixed} pixels reclassified DG → BK`);
+      }
     }
   }
 
