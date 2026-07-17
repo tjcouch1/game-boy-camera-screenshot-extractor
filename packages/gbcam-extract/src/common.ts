@@ -55,6 +55,12 @@ export interface PipelineIssue {
 export interface PipelineResult {
   grayscale: GBImageData;
   /**
+   * True when the input was detected as an already-processed Game Boy Camera
+   * image (a previous pipeline output fed back in) and passed through
+   * directly instead of running the photo pipeline.
+   */
+  alreadyProcessed?: boolean;
+  /**
    * Processing-quality issues detected during the run (empty when the photo
    * processed cleanly). Optional so results serialized by older versions
    * still deserialize.
@@ -93,6 +99,21 @@ export interface PipelineOptions {
    * @default true
    */
   locate?: boolean;
+  /**
+   * Detect inputs that are already-processed Game Boy Camera images (exact
+   * integer multiples of the known output layouts whose colors collapse to
+   * at most four clusters) and pass them through directly instead of running
+   * the photo pipeline. See `detectProcessedImage()`.
+   *
+   * @default true
+   */
+  detectProcessed?: boolean;
+  /**
+   * Frames whose artwork may surround an already-processed input. Used by
+   * `detectProcessed` to locate the camera-image hole inside wild-framed
+   * (160 × 224) inputs.
+   */
+  knownFrames?: import("./frames/types.js").Frame[];
 }
 
 // ─── Helpers ───

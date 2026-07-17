@@ -18,6 +18,12 @@ export {
 } from "./common.js";
 export { initOpenCV } from "./init-opencv.js";
 export { applyPalette } from "./palette.js";
+export { detectProcessedImage } from "./detect-processed.js";
+export type {
+  DetectProcessedOptions,
+  ProcessedDetection,
+  ProcessedLayout,
+} from "./detect-processed.js";
 export { locate } from "./locate.js";
 export { warp } from "./warp.js";
 export { correct } from "./correct.js";
@@ -53,6 +59,7 @@ import { crop } from "./crop.js";
 import { sample } from "./sample.js";
 import { quantize } from "./quantize.js";
 import { createDebugCollector } from "./debug.js";
+import { detectProcessedImage } from "./detect-processed.js";
 
 export async function processPicture(
   input: GBImageData,
@@ -64,6 +71,29 @@ export async function processPicture(
   const onProgress = options?.onProgress;
 
   const collector = debug ? createDebugCollector() : undefined;
+
+  // Already-processed inputs (previous pipeline outputs fed back in) pass
+  // through directly — running the photo pipeline on them would produce
+  // garbage. Detection is cheap: a dimension gate rejects real photos before
+  // any pixel work happens.
+  if (options?.detectProcessed ?? true) {
+    const detected = detectProcessedImage(input, {
+      knownFrames: options?.knownFrames,
+      debug: collector,
+    });
+    if (detected) {
+      await onProgress?.("quantize", 100);
+      const result: PipelineResult = {
+        grayscale: detected.grayscale,
+        issues: [],
+        alreadyProcessed: true,
+      };
+      if (debug && collector) {
+        result.debug = collector.data;
+      }
+      return result;
+    }
+  }
 
   // Awaiting onProgress lets a caller return a Promise (e.g. a setTimeout(0)
   // yield) so the browser can repaint between synchronous pipeline steps.

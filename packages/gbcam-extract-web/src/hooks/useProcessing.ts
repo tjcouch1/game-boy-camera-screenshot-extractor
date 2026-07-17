@@ -1,28 +1,9 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback } from "react";
 import { flushSync } from "react-dom";
-import type { PipelineResult, GBImageData } from "gbcam-extract";
+import type { GBImageData, Frame } from "gbcam-extract";
 import { processPicture } from "gbcam-extract";
 import { toast } from "sonner";
-import type { FrameSelection } from "../types/frame-selection.js";
-import {
-  serializePipelineResult,
-  deserializePipelineResult,
-  isSerializedPipelineResult,
-} from "../utils/serialization.js";
-
-export interface ProcessingResult {
-  result: PipelineResult;
-  filename: string;
-  processingTime: number;
-  /** Per-image frame override. Undefined = follow global default. */
-  frameOverride?: FrameSelection;
-  /**
-   * Whether the user collapsed this result's processing-quality warning.
-   * Persisted with the result (both current results and history) so the
-   * warning stays collapsed across page reloads.
-   */
-  warningCollapsed?: boolean;
-}
+import type { ProcessedImage } from "./useImageHistory.js";
 
 export interface CurrentImageProgress {
   filename: string;
@@ -38,39 +19,16 @@ export interface ProcessingProgress {
   overallProgress: number; // 0-100, smooth across all images and steps
 }
 
-const RESULTS_STORAGE_KEY = "gbcam-current-results";
-
-async function loadResultsFromStorage(): Promise<ProcessingResult[]> {
-  try {
-    const stored = localStorage.getItem(RESULTS_STORAGE_KEY);
-    if (stored) {
-      const parsed = JSON.parse(stored);
-      // Deserialize PipelineResult objects from PNG format
-      // Map over results and await deserialization for each
-      const deserialized = await Promise.all(
-        parsed.map(async (item: any) => ({
-          ...item,
-          result: isSerializedPipelineResult(item.result)
-            ? await deserializePipelineResult(item.result)
-            : item.result,
-        })),
-      );
-      return deserialized;
-    }
-  } catch (e) {
-    console.error("Error parsing results from storage:", e);
-    throw e;
-  }
-  return [];
-}
-
-function saveResultsToStorage(results: ProcessingResult[]) {
-  // Serialize before storing to use compact base64 representation
-  const serialized = results.map((item) => ({
-    ...item,
-    result: serializePipelineResult(item.result),
-  }));
-  localStorage.setItem(RESULTS_STORAGE_KEY, JSON.stringify(serialized));
+export interface ProcessFilesOptions {
+  debug?: boolean;
+  /**
+   * Frames whose artwork may surround an already-processed input; passed to
+   * the pipeline so wild-framed pipeline outputs fed back in can be cropped
+   * at the right hole position.
+   */
+  knownFrames?: Frame[];
+  /** Called once per successfully processed image, in file order. */
+  onResult: (processed: ProcessedImage) => void;
 }
 
 function fileToGBImageData(file: File): Promise<GBImageData> {
@@ -106,40 +64,6 @@ export function useProcessing() {
     currentImageProgress: null,
     overallProgress: 0,
   });
-  const [results, setResults] = useState<ProcessingResult[]>([]);
-  const [isLoaded, setIsLoaded] = useState(false);
-
-  // Load results from storage on mount
-  useEffect(() => {
-    let isMounted = true;
-    loadResultsFromStorage()
-      .then((loaded) => {
-        if (isMounted) {
-          setResults(loaded);
-          setIsLoaded(true);
-          // Save the loaded results back to storage to ensure consistency
-          saveResultsToStorage(loaded);
-        }
-      })
-      .catch(() => {
-        // If loading fails, mark as loaded and clear storage
-        if (isMounted) {
-          setResults([]);
-          setIsLoaded(true);
-          localStorage.removeItem(RESULTS_STORAGE_KEY);
-        }
-      });
-    return () => {
-      isMounted = false;
-    };
-  }, []);
-
-  // Save results whenever they change (only after initial load)
-  useEffect(() => {
-    if (isLoaded) {
-      saveResultsToStorage(results);
-    }
-  }, [results, isLoaded]);
 
   // Pipeline steps for progress tracking
   const PIPELINE_STEPS = ["warp", "correct", "crop", "sample", "quantize"];
@@ -164,129 +88,109 @@ export function useProcessing() {
     return Math.max(0, Math.min(100, Math.round(progress * 100)));
   };
 
-  const processFiles = useCallback(async (files: File[], debug = false) => {
-    setProcessing(true);
-    setProgress({
-      totalImages: files.length,
-      completedImages: 0,
-      currentImageProgress: null,
-      overallProgress: 0,
-    });
-    setResults([]);
+  const processFiles = useCallback(
+    async (files: File[], options: ProcessFilesOptions) => {
+      const { debug = false, knownFrames, onResult } = options;
+      setProcessing(true);
+      setProgress({
+        totalImages: files.length,
+        completedImages: 0,
+        currentImageProgress: null,
+        overallProgress: 0,
+      });
 
-    const newResults: ProcessingResult[] = [];
+      for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
+        const file = files[fileIndex];
+        try {
+          setProgress((prev) => ({
+            ...prev,
+            currentImageProgress: {
+              filename: file.name,
+              currentStep: "Loading",
+              index: fileIndex,
+              total: files.length,
+            },
+            overallProgress: calculateOverallProgress(
+              fileIndex,
+              "",
+              0,
+              files.length,
+            ),
+          }));
 
-    for (let fileIndex = 0; fileIndex < files.length; fileIndex++) {
-      const file = files[fileIndex];
-      try {
-        setProgress((prev) => ({
-          ...prev,
-          currentImageProgress: {
-            filename: file.name,
-            currentStep: "Loading",
-            index: fileIndex,
-            total: files.length,
-          },
-          overallProgress: calculateOverallProgress(
-            fileIndex,
-            "",
-            0,
-            files.length,
-          ),
-        }));
+          const gbImage = await fileToGBImageData(file);
 
-        const gbImage = await fileToGBImageData(file);
+          const start = performance.now();
+          const result = await processPicture(gbImage, {
+            debug,
+            knownFrames,
+            onProgress: (step, pct) => {
+              flushSync(() => {
+                setProgress((prev) => ({
+                  ...prev,
+                  currentImageProgress: prev.currentImageProgress
+                    ? {
+                        ...prev.currentImageProgress,
+                        currentStep: step,
+                      }
+                    : null,
+                  overallProgress: calculateOverallProgress(
+                    fileIndex,
+                    step,
+                    pct,
+                    files.length,
+                  ),
+                }));
+              });
+              // Yield to the event loop so the browser can repaint between
+              // synchronous pipeline steps. Without this the bar appears frozen
+              // during a single image because warp/correct/etc. all run inside
+              // one JS turn. processPicture awaits this Promise.
+              return new Promise<void>((resolve) => setTimeout(resolve, 0));
+            },
+          });
+          const processingTime = performance.now() - start;
 
-        const start = performance.now();
-        const result = await processPicture(gbImage, {
-          debug,
-          onProgress: (step, pct) => {
-            flushSync(() => {
-              setProgress((prev) => ({
-                ...prev,
-                currentImageProgress: prev.currentImageProgress
-                  ? {
-                      ...prev.currentImageProgress,
-                      currentStep: step,
-                    }
-                  : null,
-                overallProgress: calculateOverallProgress(
-                  fileIndex,
-                  step,
-                  pct,
-                  files.length,
-                ),
-              }));
-            });
-            // Yield to the event loop so the browser can repaint between
-            // synchronous pipeline steps. Without this the bar appears frozen
-            // during a single image because warp/correct/etc. all run inside
-            // one JS turn. processPicture awaits this Promise.
-            return new Promise<void>((resolve) => setTimeout(resolve, 0));
-          },
+          onResult({ result, filename: file.name, processingTime });
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          console.error(`Failed to process ${file.name}:`, err);
+          toast.error(`Failed to process ${file.name}: ${errorMsg}`);
+        }
+
+        const completedCount = fileIndex + 1;
+        const nextProgressValue = calculateOverallProgress(
+          completedCount,
+          "",
+          0,
+          files.length,
+        );
+        setProgress({
+          totalImages: files.length,
+          completedImages: completedCount,
+          currentImageProgress:
+            completedCount < files.length
+              ? {
+                  filename: "",
+                  currentStep: "",
+                  index: completedCount,
+                  total: files.length,
+                }
+              : null,
+          overallProgress: nextProgressValue,
         });
-        const processingTime = performance.now() - start;
-
-        newResults.push({ result, filename: file.name, processingTime });
-        setResults([...newResults]);
-
-        const completedCount = fileIndex + 1;
-        const nextProgressValue = calculateOverallProgress(
-          completedCount,
-          "",
-          0,
-          files.length,
-        );
-        setProgress((prev) => ({
-          totalImages: files.length,
-          completedImages: completedCount,
-          currentImageProgress:
-            completedCount < files.length
-              ? {
-                  filename: "",
-                  currentStep: "",
-                  index: completedCount,
-                  total: files.length,
-                }
-              : null,
-          overallProgress: nextProgressValue,
-        }));
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err);
-        console.error(`Failed to process ${file.name}:`, err);
-        toast.error(`Failed to process ${file.name}: ${errorMsg}`);
-        const completedCount = fileIndex + 1;
-        const nextProgressValue = calculateOverallProgress(
-          completedCount,
-          "",
-          0,
-          files.length,
-        );
-        setProgress((prev) => ({
-          totalImages: files.length,
-          completedImages: completedCount,
-          currentImageProgress:
-            completedCount < files.length
-              ? {
-                  filename: "",
-                  currentStep: "",
-                  index: completedCount,
-                  total: files.length,
-                }
-              : null,
-          overallProgress: nextProgressValue,
-        }));
       }
-    }
 
-    setProcessing(false);
-    setProgress({
-      totalImages: files.length,
-      completedImages: files.length,
-      currentImageProgress: null,
-      overallProgress: 100,
-    });
-  }, []);
+      setProcessing(false);
+      setProgress({
+        totalImages: files.length,
+        completedImages: files.length,
+        currentImageProgress: null,
+        overallProgress: 100,
+      });
+    },
+    [],
+  );
 
-  return { processFiles, processing, progress, results, setResults };
+  return { processFiles, processing, progress };
 }

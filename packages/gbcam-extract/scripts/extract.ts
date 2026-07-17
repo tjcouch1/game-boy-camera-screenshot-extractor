@@ -16,6 +16,7 @@ import { correct } from "../src/correct.js";
 import { crop } from "../src/crop.js";
 import { sample } from "../src/sample.js";
 import { quantize } from "../src/quantize.js";
+import { detectProcessedImage } from "../src/detect-processed.js";
 import type { GBImageData, StepName } from "../src/common.js";
 import { STEP_ORDER } from "../src/common.js";
 
@@ -325,6 +326,21 @@ async function main() {
 
     try {
       let current = await loadImage(inputPath);
+
+      // Already-processed inputs pass straight through when running the full
+      // pipeline (explicit --start/--end step selections are left alone).
+      if (args.start === "locate" && args.end === "quantize") {
+        const detected = detectProcessedImage(current);
+        if (detected) {
+          const outPath = join(outDir, `${inputStem}${STEP_SUFFIX.quantize}.png`);
+          await saveImage(detected.grayscale, outPath);
+          console.log(
+            `  already-processed input detected (${detected.layout} at ${detected.scale}x) — passed through`,
+          );
+          console.log(`  -> ${inputStem}${STEP_SUFFIX.quantize}.png`);
+          continue;
+        }
+      }
 
       for (let si = 0; si < activeSteps.length; si++) {
         const stepName = activeSteps[si];
