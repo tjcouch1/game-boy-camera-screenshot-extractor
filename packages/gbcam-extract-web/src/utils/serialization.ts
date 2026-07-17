@@ -27,6 +27,9 @@ export interface SerializedPipelineResult {
   /** Processing-quality issues detected during the run (absent on items
    *  serialized by older versions). */
   issues?: PipelineIssue[];
+  /** True when the input was detected as an already-processed image and
+   *  passed through the pipeline untouched. */
+  alreadyProcessed?: boolean;
 }
 
 /**
@@ -138,6 +141,7 @@ export function serializePipelineResult(
     _type: "PipelineResult",
     grayscale: serializeGBImageData(result.grayscale),
     ...(result.issues?.length ? { issues: result.issues } : {}),
+    ...(result.alreadyProcessed ? { alreadyProcessed: true } : {}),
   };
 }
 
@@ -149,7 +153,11 @@ export async function deserializePipelineResult(
   serialized: SerializedPipelineResult,
 ): Promise<PipelineResult> {
   const grayscale = await deserializeGBImageData(serialized.grayscale);
-  return { grayscale, ...(serialized.issues ? { issues: serialized.issues } : {}) };
+  return {
+    grayscale,
+    ...(serialized.issues ? { issues: serialized.issues } : {}),
+    ...(serialized.alreadyProcessed ? { alreadyProcessed: true } : {}),
+  };
 }
 
 /**

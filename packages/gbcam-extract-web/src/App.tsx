@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import type { Frame } from "gbcam-extract";
 import { useOpenCV } from "./hooks/useOpenCV.js";
 import { useImageHistory } from "./hooks/useImageHistory.js";
@@ -7,6 +7,7 @@ import { ImageInput } from "./components/ImageInput.js";
 import { useProcessing } from "./hooks/useProcessing.js";
 import type { ProcessingProgress } from "./hooks/useProcessing.js";
 import { ResultCard } from "./components/ResultCard.js";
+import { HistoryGrid } from "./components/HistoryGrid.js";
 import { FramePicker } from "./components/FramePicker.js";
 import { PalettePicker } from "./components/PalettePicker.js";
 import { PipelineDebugViewer } from "./components/PipelineDebugViewer.js";
@@ -43,7 +44,6 @@ import {
   CollapsibleTrigger,
 } from "@/shadcn/components/collapsible";
 import { Button } from "@/shadcn/components/button";
-import { Card, CardContent } from "@/shadcn/components/card";
 import { Separator } from "@/shadcn/components/separator";
 import { Checkbox } from "@/shadcn/components/checkbox";
 import { Field, FieldGroup, FieldLabel } from "@/shadcn/components/field";
@@ -124,25 +124,23 @@ function ProgressDisplay({ progress }: { progress: ProcessingProgress }) {
 
 export default function App() {
   const { status, progress: cvProgress, error } = useOpenCV();
+  const { processFiles, processing, progress } = useProcessing();
   const {
-    processFiles,
-    processing,
-    progress,
-    results,
-    setResults: setCurrentResults,
-  } = useProcessing();
-  const {
-    history,
+    items: historyItems,
+    currentIds,
+    currentItems,
+    isLoaded: isHistoryLoaded,
     isHistoryExpanded,
     setIsHistoryExpanded,
-    archiveResults,
-    deleteFromHistory,
-    deleteBatch,
+    addResult,
+    clearCurrent,
+    openItem,
+    closeItem,
+    deleteItem,
     deleteAllHistory,
+    updateItem,
     updateSettings: updateHistorySettings,
     settings: historySettings,
-    updateFrameOverride: updateHistoryFrameOverride,
-    updateWarningCollapsed: updateHistoryWarningCollapsed,
     purgeFrameOverride: purgeHistoryFrameOverride,
   } = useImageHistory();
   const { settings, updateSetting } = useAppSettings();
@@ -187,22 +185,6 @@ export default function App() {
 
   const defaultFrameLabel = frameLabelFor(defaultFrame);
   const resolvedDefaultFrame: Frame | null = resolveEffective(defaultFrame);
-
-  function setResultFrameOverride(filename: string, next: FrameSelection) {
-    setCurrentResults((prev) =>
-      prev.map((r) =>
-        r.filename === filename ? { ...r, frameOverride: next } : r,
-      ),
-    );
-  }
-
-  function setResultWarningCollapsed(filename: string, collapsed: boolean) {
-    setCurrentResults((prev) =>
-      prev.map((r) =>
-        r.filename === filename ? { ...r, warningCollapsed: collapsed } : r,
-      ),
-    );
-  }
 
   const setDebug = (value: boolean) => updateSetting("debug", value);
   const setClipboardEnabled = (value: boolean) =>
@@ -277,26 +259,38 @@ export default function App() {
   };
 
   const handleImagesSelected = (files: File[]) => {
-    // Archive current results to history before processing new ones
-    if (results.length > 0) {
-      archiveResults(results);
-      setCurrentResults([]);
-    }
-    processFiles(files, debug);
+    // New results replace the ones currently open at the top; the old ones
+    // stay available in the history grid.
+    clearCurrent();
+    processFiles(files, {
+      debug,
+      knownFrames: catalog.frames,
+      onResult: addResult,
+    });
   };
 
-  const handleDeleteResult = useCallback(
-    (filename: string) => {
-      setCurrentResults((prev) => prev.filter((r) => r.filename !== filename));
+  // Scroll the (possibly newly opened) result cards into view when the user
+  // opens an image from the history grid further down the page.
+  const resultsRef = useRef<HTMLDivElement>(null);
+  const handleOpenHistoryItem = useCallback(
+    (id: string) => {
+      openItem(id);
+      requestAnimationFrame(() => {
+        resultsRef.current?.scrollIntoView({
+          behavior: "smooth",
+          block: "start",
+        });
+      });
     },
-    [setCurrentResults],
+    [openItem],
   );
 
   // Deleting a user frame must also scrub every selection that pointed at it:
   // the global default reverts to FRAME_SELECTION_NONE (the factory default),
-  // and any per-result override resets to {kind: "default"} so it follows the
-  // global default. History overrides of {kind: "default"} need no scrubbing —
-  // they already inherit from the updated global default.
+  // and any per-image override resets to {kind: "default"} so it follows the
+  // global default. Overrides of {kind: "default"} need no scrubbing — they
+  // already inherit from the updated global default. Current results live in
+  // the history store, so one purge covers both views.
   const handleDeleteUserFrame = useCallback(
     (id: string) => {
       catalog.deleteUserFrame(id);
@@ -308,23 +302,9 @@ export default function App() {
         updateSetting("defaultFrame", FRAME_SELECTION_NONE);
       }
 
-      setCurrentResults((prev) =>
-        prev.map((r) =>
-          r.frameOverride?.kind === "frame" && r.frameOverride.id === id
-            ? { ...r, frameOverride: FRAME_SELECTION_DEFAULT }
-            : r,
-        ),
-      );
-
       purgeHistoryFrameOverride(id);
     },
-    [
-      catalog,
-      settings.defaultFrame,
-      updateSetting,
-      setCurrentResults,
-      purgeHistoryFrameOverride,
-    ],
+    [catalog, settings.defaultFrame, updateSetting, purgeHistoryFrameOverride],
   );
 
   return (
@@ -452,7 +432,7 @@ export default function App() {
 
             {processing && <ProgressDisplay progress={progress} />}
 
-            {!processing && results.length === 0 && history.length === 0 && (
+            {!processing && isHistoryLoaded && historyItems.length === 0 && (
               <Empty className="my-6">
                 <EmptyHeader>
                   <ImageIcon className="size-10 text-muted-foreground" />
@@ -545,23 +525,23 @@ export default function App() {
               </FieldGroup>
             </div>
 
-            {results.length > 0 && (
-              <>
+            {currentItems.length > 0 && (
+              <div ref={resultsRef} className="scroll-mt-4">
                 <div className="mb-4 flex flex-wrap items-center gap-2">
-                  {results.length > 1 && (
+                  {currentItems.length > 1 && (
                     <Button
                       onClick={() => {
-                        results.forEach((r) => {
-                          const override = r.frameOverride ?? FRAME_SELECTION_DEFAULT;
+                        currentItems.forEach((item) => {
+                          const override = item.frameOverride ?? FRAME_SELECTION_DEFAULT;
                           const effective = resolveEffective(override);
                           const canvas = buildOutputCanvas(
-                            r.result,
+                            item.result,
                             paletteEntry.colors,
                             effective,
                             outputScale,
                           );
                           if (!canvas) return;
-                          const baseName = r.filename.replace(/\.[^.]+$/, "");
+                          const baseName = item.filename.replace(/\.[^.]+$/, "");
                           const sanitizedPaletteName = sanitizePaletteName(paletteEntry.name);
                           const frameSlug = effective
                             ? sanitizeFrameName(
@@ -577,26 +557,28 @@ export default function App() {
                         });
                       }}
                     >
-                      Download All ({results.length})
+                      Download All ({currentItems.length})
                     </Button>
                   )}
                 </div>
 
                 <div className="grid gap-4">
-                  {results.map((r) => (
-                    <div key={r.filename}>
+                  {currentItems.map((item) => (
+                    <div key={item.id}>
                       <ResultCard
-                        result={r.result}
-                        filename={r.filename}
-                        processingTime={r.processingTime}
+                        result={item.result}
+                        filename={item.filename}
+                        processingTime={item.processingTime}
                         palette={paletteEntry.colors}
                         paletteName={paletteEntry.name}
                         outputScale={outputScale}
                         previewScale={previewScale}
                         frames={catalog.frames}
-                        frameOverride={r.frameOverride ?? FRAME_SELECTION_DEFAULT}
-                        onFrameOverrideChange={(next) => setResultFrameOverride(r.filename, next)}
-                        effectiveFrame={resolveEffective(r.frameOverride ?? FRAME_SELECTION_DEFAULT)}
+                        frameOverride={item.frameOverride ?? FRAME_SELECTION_DEFAULT}
+                        onFrameOverrideChange={(next) =>
+                          updateItem(item.id, { frameOverride: next })
+                        }
+                        effectiveFrame={resolveEffective(item.frameOverride ?? FRAME_SELECTION_DEFAULT)}
                         defaultFrameLabel={defaultFrameLabel}
                         defaultFrame={resolvedDefaultFrame}
                         framePickerDisabled={catalog.status !== "ready"}
@@ -604,26 +586,26 @@ export default function App() {
                         onAddUserFrames={catalog.addUserFrames}
                         onAddOriginalFrames={catalog.addOriginalFrames}
                         onDeleteUserFrame={handleDeleteUserFrame}
-                        warningCollapsed={r.warningCollapsed ?? false}
+                        warningCollapsed={item.warningCollapsed ?? false}
                         onWarningCollapsedChange={(collapsed) =>
-                          setResultWarningCollapsed(r.filename, collapsed)
+                          updateItem(item.id, { warningCollapsed: collapsed })
                         }
-                        onDelete={() => handleDeleteResult(r.filename)}
+                        onDelete={() => closeItem(item.id)}
                       />
-                      {(r.result.intermediates || r.result.debug) && (
+                      {(item.result.intermediates || item.result.debug) && (
                         <PipelineDebugViewer
-                          intermediates={r.result.intermediates}
-                          debug={r.result.debug}
+                          intermediates={item.result.intermediates}
+                          debug={item.result.debug}
                         />
                       )}
                     </div>
                   ))}
                 </div>
-              </>
+              </div>
             )}
 
             {/* Image History Section */}
-            {history.length > 0 && (
+            {historyItems.length > 0 && (
               <Collapsible
                 open={isHistoryExpanded}
                 onOpenChange={setIsHistoryExpanded}
@@ -639,12 +621,7 @@ export default function App() {
                   }
                 >
                   <Library data-icon="inline-start" />
-                  Image History (
-                  {history.reduce(
-                    (sum, batch) => sum + batch.results.length,
-                    0,
-                  )}{" "}
-                  images)
+                  Image History ({historyItems.length} images)
                   <ChevronDown
                     className="transition-transform data-[state=open]:rotate-180"
                     data-icon="inline-end"
@@ -690,8 +667,9 @@ export default function App() {
                           <DialogHeader>
                             <DialogTitle>Delete all history?</DialogTitle>
                             <DialogDescription>
-                              This will permanently remove all archived image
-                              batches. This action cannot be undone.
+                              This will permanently remove all images in
+                              history, including any results currently shown
+                              at the top. This action cannot be undone.
                             </DialogDescription>
                           </DialogHeader>
                           <DialogFooter>
@@ -715,54 +693,18 @@ export default function App() {
                       </Dialog>
                     </div>
 
-                    {history.map((batch) => (
-                      <Card key={batch.id} className="bg-muted/40 p-4">
-                        <CardContent className="p-0">
-                          <div className="text-xs text-muted-foreground mb-3">
-                            {new Date(batch.timestamp).toLocaleString()} (
-                            {batch.results.length} images)
-                          </div>
-                          <div className="grid gap-3">
-                            {batch.results.map((result, idx) => (
-                              <ResultCard
-                                key={`${batch.id}-${idx}`}
-                                result={result.result}
-                                filename={result.filename}
-                                processingTime={result.processingTime}
-                                palette={paletteEntry.colors}
-                                paletteName={paletteEntry.name}
-                                outputScale={outputScale}
-                                previewScale={previewScale}
-                                frames={catalog.frames}
-                                frameOverride={result.frameOverride ?? FRAME_SELECTION_DEFAULT}
-                                onFrameOverrideChange={(next) =>
-                                  updateHistoryFrameOverride(batch.id, idx, next)
-                                }
-                                effectiveFrame={resolveEffective(result.frameOverride ?? FRAME_SELECTION_DEFAULT)}
-                                defaultFrameLabel={defaultFrameLabel}
-                                defaultFrame={resolvedDefaultFrame}
-                                framePickerDisabled={catalog.status !== "ready"}
-                                userFrameIds={catalog.userFrameIds}
-                                onAddUserFrames={catalog.addUserFrames}
-                                onAddOriginalFrames={catalog.addOriginalFrames}
-                                onDeleteUserFrame={handleDeleteUserFrame}
-                                warningCollapsed={result.warningCollapsed ?? false}
-                                onWarningCollapsedChange={(collapsed) =>
-                                  updateHistoryWarningCollapsed(
-                                    batch.id,
-                                    idx,
-                                    collapsed,
-                                  )
-                                }
-                                onDelete={() =>
-                                  deleteFromHistory(batch.id, idx)
-                                }
-                              />
-                            ))}
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))}
+                    <HistoryGrid
+                      items={historyItems}
+                      currentIds={currentIds}
+                      palette={paletteEntry.colors}
+                      resolveFrame={(item) =>
+                        resolveEffective(
+                          item.frameOverride ?? FRAME_SELECTION_DEFAULT,
+                        )
+                      }
+                      onOpen={handleOpenHistoryItem}
+                      onDelete={deleteItem}
+                    />
                   </div>
                 </CollapsibleContent>
               </Collapsible>

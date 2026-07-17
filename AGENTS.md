@@ -312,6 +312,16 @@ Test reference images in `test-input/` use this same grayscale palette.
 
 The pipeline runs six steps in order: **locate -> warp -> correct -> crop -> sample -> quantize**.
 
+Before any step runs, `processPicture()` checks whether the input is an
+already-processed Game Boy Camera image being fed back in
+(`detect-processed.ts`): dimensions must be an exact integer multiple of a
+known output layout (bare 128x112, normal-framed 160x144, or wild-framed
+160x224), and the colors must collapse to at most four tight clusters
+(robust to lossy re-compression). Detected inputs skip the photo pipeline
+entirely and the recovered four-color image is returned with
+`PipelineResult.alreadyProcessed = true`. Opt out via
+`PipelineOptions.detectProcessed = false`.
+
 ### 1. Locate (`locate.ts`)
 
 Finds the Game Boy Screen within a full phone photo. Generates candidate

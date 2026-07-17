@@ -1,6 +1,6 @@
 import { type GBImageData, GB_COLORS } from "./common.js";
 
-function parseHex(hex: string): [number, number, number] {
+export function parseHex(hex: string): [number, number, number] {
   const h = hex.replace("#", "");
   return [parseInt(h.slice(0, 2), 16), parseInt(h.slice(2, 4), 16), parseInt(h.slice(4, 6), 16)];
 }

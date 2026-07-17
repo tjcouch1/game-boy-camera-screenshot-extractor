@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import type { PipelineResult } from "gbcam-extract";
 import {
   serializePipelineResult,
@@ -6,13 +6,34 @@ import {
   isSerializedPipelineResult,
 } from "../utils/serialization.js";
 import { useLocalStorage } from "./useLocalStorage.js";
-import type { ProcessingResult } from "./useProcessing.js";
 import type { FrameSelection } from "../types/frame-selection.js";
 
-export interface ImageHistoryBatch {
+/**
+ * A single processed image. This is the app's single source of truth for
+ * every image — both the "current results" shown at the top of the page and
+ * the history grid render (subsets of) the same item list, so an update made
+ * from either place is reflected in both.
+ */
+export interface HistoryItem {
   id: string;
   timestamp: number;
-  results: ProcessingResult[];
+  filename: string;
+  processingTime: number;
+  result: PipelineResult;
+  /** Per-image frame override. Undefined = follow global default. */
+  frameOverride?: FrameSelection;
+  /**
+   * Whether the user collapsed this result's processing-quality warning.
+   * Persisted so the warning stays collapsed across page reloads.
+   */
+  warningCollapsed?: boolean;
+}
+
+/** The fields needed to add a freshly processed image to the store. */
+export interface ProcessedImage {
+  result: PipelineResult;
+  filename: string;
+  processingTime: number;
 }
 
 export interface HistorySettings {
@@ -21,254 +42,450 @@ export interface HistorySettings {
 
 const HISTORY_STORAGE_KEY = "gbcam-image-history";
 const HISTORY_SETTINGS_KEY = "gbcam-history-settings";
+const LEGACY_CURRENT_RESULTS_KEY = "gbcam-current-results";
 const DEFAULT_MAX_SIZE = 10;
-const MAX_BATCH_SIZE = 10; // Don't store more than 10 images per batch
 
 function generateId(): string {
-  return `batch-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  return `img-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }
 
-// Serialized form on disk (each result has a serialized PipelineResult).
-type SerializedHistory = Array<{
+// ─── Storage schema ───
+
+interface SerializedHistoryItem {
+  id: string;
+  timestamp: number;
+  filename: string;
+  processingTime: number;
+  result: unknown;
+  frameOverride?: FrameSelection;
+  warningCollapsed?: boolean;
+}
+
+/** v2 storage: flat item list plus the ids currently open at the top. */
+interface StoredHistoryV2 {
+  version: 2;
+  items: SerializedHistoryItem[];
+  currentIds: string[];
+}
+
+/** v1 (legacy) storage: array of batches of results. */
+type LegacyStoredHistory = Array<{
   id: string;
   timestamp: number;
   results: Array<{
     filename: string;
     processingTime: number;
     result: unknown;
+    frameOverride?: FrameSelection;
+    warningCollapsed?: boolean;
   }>;
 }>;
 
-async function deserializeHistoryBatches(
-  raw: SerializedHistory,
-): Promise<ImageHistoryBatch[]> {
-  return Promise.all(
-    raw.map(async (batch) => ({
-      ...batch,
-      results: await Promise.all(
-        batch.results.map(async (item) => ({
-          ...item,
-          result: isSerializedPipelineResult(item.result)
-            ? await deserializePipelineResult(item.result)
-            : (item.result as PipelineResult),
-        })),
-      ),
-    })),
-  );
+type StoredHistory = StoredHistoryV2 | LegacyStoredHistory;
+
+/** In-memory store: the deserialized items plus the ids open at the top. */
+interface HistoryStore {
+  items: HistoryItem[];
+  currentIds: string[];
 }
 
-function serializeHistoryBatches(
-  history: ImageHistoryBatch[],
-): SerializedHistory {
-  return history.map((batch) => ({
-    ...batch,
-    results: batch.results.map((item) => ({
-      ...item,
-      result: serializePipelineResult(item.result),
-    })),
+/** Build a SerializedHistoryItem from a legacy result record. */
+function toSerializedItem(
+  r: {
+    filename: string;
+    processingTime: number;
+    result: unknown;
+    frameOverride?: FrameSelection;
+    warningCollapsed?: boolean;
+  },
+  id: string,
+  timestamp: number,
+): SerializedHistoryItem {
+  return {
+    id,
+    timestamp,
+    filename: r.filename,
+    processingTime: r.processingTime,
+    result: r.result,
+    ...(r.frameOverride ? { frameOverride: r.frameOverride } : {}),
+    ...(r.warningCollapsed !== undefined
+      ? { warningCollapsed: r.warningCollapsed }
+      : {}),
+  };
+}
+
+/**
+ * Normalize whatever was on disk into v2 shape. Handles:
+ * - v2 object storage (returned as-is),
+ * - legacy batch arrays (flattened, newest batch first),
+ * - the legacy separate "current results" key (prepended as newest items and
+ *   marked current, preserving the pre-migration view — checked regardless of
+ *   the history key's shape, since a legacy user may have current results but
+ *   no history).
+ *
+ * Pure with respect to localStorage: the caller is responsible for persisting
+ * the result and retiring the legacy key (in that order, so an interruption
+ * between the two can't lose data).
+ */
+function migrateStored(stored: unknown): {
+  v2: StoredHistoryV2;
+  changed: boolean;
+} {
+  let items: SerializedHistoryItem[];
+  let currentIds: string[];
+  let changed: boolean;
+
+  if (Array.isArray(stored)) {
+    const legacy = stored as LegacyStoredHistory;
+    items = legacy.flatMap((batch) =>
+      batch.results.map((r, i) =>
+        toSerializedItem(r, `${batch.id}-${i}`, batch.timestamp),
+      ),
+    );
+    currentIds = [];
+    changed = true;
+  } else if (
+    stored &&
+    typeof stored === "object" &&
+    (stored as StoredHistoryV2).version === 2
+  ) {
+    const v2 = stored as StoredHistoryV2;
+    items = v2.items;
+    currentIds = v2.currentIds;
+    changed = false;
+  } else {
+    items = [];
+    currentIds = [];
+    changed = false;
+  }
+
+  try {
+    const rawCurrent = localStorage.getItem(LEGACY_CURRENT_RESULTS_KEY);
+    if (rawCurrent) {
+      const parsed = JSON.parse(rawCurrent) as Array<{
+        filename: string;
+        processingTime: number;
+        result: unknown;
+        frameOverride?: FrameSelection;
+        warningCollapsed?: boolean;
+      }>;
+      const now = Date.now();
+      const migrated = parsed.map((r) =>
+        toSerializedItem(r, generateId(), now),
+      );
+      items = [...migrated, ...items];
+      currentIds = [...currentIds, ...migrated.map((m) => m.id)];
+      changed = true;
+    }
+  } catch {
+    // Ignore a corrupt legacy key — history still migrates.
+  }
+
+  return { v2: { version: 2, items, currentIds }, changed };
+}
+
+/**
+ * Serialized results keyed by the deserialized PipelineResult object. Results
+ * are immutable once created (item patches spread the item, never the
+ * result), so caching lets the persist effect re-encode only results it has
+ * never seen instead of PNG-encoding every stored image on every change.
+ */
+const serializedResultCache = new WeakMap<PipelineResult, unknown>();
+
+function serializeResultCached(result: PipelineResult): unknown {
+  let serialized = serializedResultCache.get(result);
+  if (!serialized) {
+    serialized = serializePipelineResult(result);
+    serializedResultCache.set(result, serialized);
+  }
+  return serialized;
+}
+
+/**
+ * Deserialize stored items, dropping (only) items that fail to decode so one
+ * corrupt entry can't take the whole history down with it.
+ */
+async function deserializeItems(
+  stored: SerializedHistoryItem[],
+): Promise<HistoryItem[]> {
+  const results = await Promise.all(
+    stored.map(async (item): Promise<HistoryItem | null> => {
+      try {
+        let result: PipelineResult;
+        if (isSerializedPipelineResult(item.result)) {
+          result = await deserializePipelineResult(item.result);
+          // Seed the cache so loaded items are never re-encoded on persist.
+          serializedResultCache.set(result, item.result);
+        } else {
+          result = item.result as PipelineResult;
+        }
+        return { ...item, result };
+      } catch {
+        return null;
+      }
+    }),
+  );
+  return results.filter((item): item is HistoryItem => item !== null);
+}
+
+function serializeItems(items: HistoryItem[]): SerializedHistoryItem[] {
+  return items.map((item) => ({
+    ...item,
+    result: serializeResultCached(item.result),
   }));
 }
 
+/**
+ * Drop the oldest non-current items until the store fits `maxSize`. Items
+ * currently open at the top are never pruned out from under the user.
+ */
+function pruneItems(
+  items: HistoryItem[],
+  currentIds: string[],
+  maxSize: number,
+): HistoryItem[] {
+  if (items.length <= maxSize) return items;
+  const current = new Set(currentIds);
+  const removable = items.length - maxSize;
+  let removed = 0;
+  const kept: HistoryItem[] = [];
+  // Items are stored newest-first, so walk from the end (oldest) backwards.
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
+    if (removed < removable && !current.has(item.id)) {
+      removed++;
+      continue;
+    }
+    kept.unshift(item);
+  }
+  return kept;
+}
+
 export function useImageHistory() {
-  // Raw serialized form persisted via the localStorage hook.
-  const [serializedHistory, setSerializedHistory] =
-    useLocalStorage<SerializedHistory>(HISTORY_STORAGE_KEY, []);
+  const [, setStored] = useLocalStorage<StoredHistory>(HISTORY_STORAGE_KEY, {
+    version: 2,
+    items: [],
+    currentIds: [],
+  });
   const [settings, setSettings] = useLocalStorage<HistorySettings>(
     HISTORY_SETTINGS_KEY,
     { maxSize: DEFAULT_MAX_SIZE },
   );
 
-  // Deserialized in-memory form (async deserialize on mount).
-  const [history, setHistory] = useState<ImageHistoryBatch[]>([]);
-  const [isHistoryLoaded, setIsHistoryLoaded] = useState(false);
+  // Deserialized in-memory store (async deserialize on mount).
+  const [store, setStore] = useState<HistoryStore>({
+    items: [],
+    currentIds: [],
+  });
+  const [isLoaded, setIsLoaded] = useState(false);
   const [isHistoryExpanded, setIsHistoryExpanded] = useState(false);
 
   useEffect(() => {
     let mounted = true;
-    deserializeHistoryBatches(serializedHistory)
-      .then((deserialized) => {
-        if (mounted) {
-          setHistory(deserialized);
-          setIsHistoryLoaded(true);
+    (async () => {
+      let v2: StoredHistoryV2 = { version: 2, items: [], currentIds: [] };
+      try {
+        // Read fresh from localStorage (rather than the hook's mount-time
+        // snapshot) so the migration is idempotent under StrictMode's
+        // double-mount: the second run sees the v2 store the first run wrote.
+        const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
+        const migrated = migrateStored(raw ? JSON.parse(raw) : null);
+        v2 = migrated.v2;
+        if (migrated.changed) {
+          // Persist the migrated store BEFORE retiring the legacy key so an
+          // interruption between the two can't lose data.
+          setStored(v2);
+          try {
+            localStorage.removeItem(LEGACY_CURRENT_RESULTS_KEY);
+          } catch {
+            // Ignore — worst case the retired key lingers.
+          }
         }
-      })
-      .catch(() => {
-        if (mounted) {
-          setHistory([]);
-          setIsHistoryLoaded(true);
-          setSerializedHistory([]);
-        }
+      } catch {
+        // Corrupt storage: start empty in memory but leave the stored value
+        // untouched rather than overwriting it with an empty store.
+      }
+      const loaded = await deserializeItems(v2.items);
+      if (!mounted) return;
+      setStore((prev) => {
+        // Merge under anything added (via addResult) while deserialization
+        // was in flight instead of clobbering it.
+        const prevIds = new Set(prev.items.map((item) => item.id));
+        const items = [
+          ...prev.items,
+          ...loaded.filter((item) => !prevIds.has(item.id)),
+        ];
+        const ids = new Set(items.map((item) => item.id));
+        const currentIds = [
+          ...prev.currentIds,
+          ...v2.currentIds.filter((id) => !prev.currentIds.includes(id)),
+        ].filter((id) => ids.has(id));
+        return { items, currentIds };
       });
+      setIsLoaded(true);
+    })();
     return () => {
       mounted = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []); // Only re-deserialize on mount; in-memory updates flow the other way.
+  }, []); // Only deserialize on mount; in-memory updates flow the other way.
 
-  // Re-serialize and persist whenever in-memory history changes after load.
+  // Re-serialize and persist whenever the in-memory store changes after load.
   useEffect(() => {
-    if (!isHistoryLoaded) return;
-    setSerializedHistory(serializeHistoryBatches(history));
-  }, [history, isHistoryLoaded, setSerializedHistory]);
+    if (!isLoaded) return;
+    setStored({
+      version: 2,
+      items: serializeItems(store.items),
+      currentIds: store.currentIds,
+    });
+  }, [store, isLoaded, setStored]);
 
-  // Add current results to history (moves them from current to history)
-  const archiveResults = useCallback(
-    (results: ProcessingResult[]) => {
-      if (results.length === 0) return;
+  const { items, currentIds } = store;
 
-      const newBatch: ImageHistoryBatch = {
-        id: generateId(),
-        timestamp: Date.now(),
-        results: results.slice(0, MAX_BATCH_SIZE), // Limit batch size
-      };
-
-      setHistory((prev) => {
-        let updated = [newBatch, ...prev];
-
-        // Calculate total number of images
-        let totalImages = updated.reduce(
-          (sum, batch) => sum + batch.results.length,
-          0,
-        );
-
-        // Remove oldest batches if total exceeds max size
-        while (totalImages > settings.maxSize && updated.length > 0) {
-          const lastBatch = updated[updated.length - 1];
-          totalImages -= lastBatch.results.length;
-          updated = updated.slice(0, -1);
-        }
-
-        return updated;
-      });
-    },
-    [settings],
+  const itemsById = useMemo(
+    () => new Map(items.map((item) => [item.id, item])),
+    [items],
   );
 
-  // Delete a specific result from history
-  const deleteFromHistory = useCallback(
-    (batchId: string, resultIndex: number) => {
-      setHistory(
-        (prev) =>
-          prev
-            .map((batch) => {
-              if (batch.id === batchId) {
-                return {
-                  ...batch,
-                  results: batch.results.filter((_, i) => i !== resultIndex),
-                };
-              }
-              return batch;
-            })
-            .filter((batch) => batch.results.length > 0), // Remove empty batches
-      );
+  /** The items currently open as result cards at the top, in display order. */
+  const currentItems = useMemo(
+    () =>
+      currentIds
+        .map((id) => itemsById.get(id))
+        .filter((item): item is HistoryItem => item !== undefined),
+    [currentIds, itemsById],
+  );
+
+  /** Add a freshly processed image to history and open it at the top. */
+  const addResult = useCallback(
+    (processed: ProcessedImage) => {
+      const item: HistoryItem = {
+        id: generateId(),
+        timestamp: Date.now(),
+        ...processed,
+      };
+      setStore((prev) => {
+        const currentIdsNext = [...prev.currentIds, item.id];
+        return {
+          items: pruneItems(
+            [item, ...prev.items],
+            currentIdsNext,
+            settings.maxSize,
+          ),
+          currentIds: currentIdsNext,
+        };
+      });
+    },
+    [settings.maxSize],
+  );
+
+  /** Close all result cards at the top (items stay in history). */
+  const clearCurrent = useCallback(() => {
+    setStore((prev) => ({
+      // Closed items lose their prune protection, so re-enforce maxSize.
+      items: pruneItems(prev.items, [], settings.maxSize),
+      currentIds: [],
+    }));
+  }, [settings.maxSize]);
+
+  /** Open a history item as a result card at the top (moves it first). */
+  const openItem = useCallback((id: string) => {
+    setStore((prev) => ({
+      ...prev,
+      currentIds: [id, ...prev.currentIds.filter((x) => x !== id)],
+    }));
+  }, []);
+
+  /** Close one result card at the top (the item stays in history). */
+  const closeItem = useCallback(
+    (id: string) => {
+      setStore((prev) => {
+        const currentIds = prev.currentIds.filter((x) => x !== id);
+        return {
+          // Closed items lose their prune protection, so re-enforce maxSize.
+          items: pruneItems(prev.items, currentIds, settings.maxSize),
+          currentIds,
+        };
+      });
+    },
+    [settings.maxSize],
+  );
+
+  /** Permanently delete an item from history (and the top, if open). */
+  const deleteItem = useCallback((id: string) => {
+    setStore((prev) => ({
+      items: prev.items.filter((item) => item.id !== id),
+      currentIds: prev.currentIds.filter((x) => x !== id),
+    }));
+  }, []);
+
+  const deleteAllHistory = useCallback(() => {
+    setStore({ items: [], currentIds: [] });
+  }, []);
+
+  /** Patch an item's user-editable fields (frame override, warning state). */
+  const updateItem = useCallback(
+    (
+      id: string,
+      patch: Partial<Pick<HistoryItem, "frameOverride" | "warningCollapsed">>,
+    ) => {
+      setStore((prev) => ({
+        ...prev,
+        items: prev.items.map((item) =>
+          item.id === id ? { ...item, ...patch } : item,
+        ),
+      }));
     },
     [],
   );
 
-  // Delete all results from a specific batch
-  const deleteBatch = useCallback((batchId: string) => {
-    setHistory((prev) => prev.filter((batch) => batch.id !== batchId));
-  }, []);
-
-  // Delete all history
-  const deleteAllHistory = useCallback(() => {
-    setHistory([]);
-  }, []);
-
-  // Update history settings
   const updateSettings = useCallback(
     (newSettings: Partial<HistorySettings>) => {
       setSettings((prev) => ({ ...prev, ...newSettings }));
+      if (newSettings.maxSize !== undefined) {
+        const maxSize = newSettings.maxSize;
+        setStore((prev) => ({
+          ...prev,
+          items: pruneItems(prev.items, prev.currentIds, maxSize),
+        }));
+      }
     },
     [setSettings],
   );
 
-  // Prune history based on current max size
-  const pruneHistory = useCallback(() => {
-    setHistory((prev) => {
-      let updated = [...prev];
-      let totalImages = updated.reduce(
-        (sum, batch) => sum + batch.results.length,
-        0,
-      );
-
-      while (totalImages > settings.maxSize && updated.length > 0) {
-        const lastBatch = updated[updated.length - 1];
-        totalImages -= lastBatch.results.length;
-        updated = updated.slice(0, -1);
-      }
-
-      return updated;
-    });
-  }, [settings]);
-
-  const updateFrameOverride = useCallback(
-    (batchId: string, resultIndex: number, override: FrameSelection) => {
-      setHistory((prev) =>
-        prev.map((batch) =>
-          batch.id === batchId
-            ? {
-                ...batch,
-                results: batch.results.map((r, i) =>
-                  i === resultIndex ? { ...r, frameOverride: override } : r,
-                ),
-              }
-            : batch,
-        ),
-      );
-    },
-    [],
-  );
-
-  const updateWarningCollapsed = useCallback(
-    (batchId: string, resultIndex: number, collapsed: boolean) => {
-      setHistory((prev) =>
-        prev.map((batch) =>
-          batch.id === batchId
-            ? {
-                ...batch,
-                results: batch.results.map((r, i) =>
-                  i === resultIndex ? { ...r, warningCollapsed: collapsed } : r,
-                ),
-              }
-            : batch,
-        ),
-      );
-    },
-    [],
-  );
-
   /**
-   * Reset any history result whose frameOverride points to `frameId` back to
+   * Reset any item whose frameOverride points to `frameId` back to
    * `{kind: "default"}` so it follows the global default. Called when a user
    * frame is deleted so stale references don't render as "unknown frame".
    */
   const purgeFrameOverride = useCallback((frameId: string) => {
-    setHistory((prev) =>
-      prev.map((batch) => ({
-        ...batch,
-        results: batch.results.map((r) =>
-          r.frameOverride?.kind === "frame" && r.frameOverride.id === frameId
-            ? { ...r, frameOverride: { kind: "default" } }
-            : r,
-        ),
-      })),
-    );
+    setStore((prev) => ({
+      ...prev,
+      items: prev.items.map((item) =>
+        item.frameOverride?.kind === "frame" &&
+        item.frameOverride.id === frameId
+          ? { ...item, frameOverride: { kind: "default" } }
+          : item,
+      ),
+    }));
   }, []);
 
   return {
-    history,
+    items,
+    currentIds,
+    currentItems,
+    isLoaded,
     settings,
     isHistoryExpanded,
     setIsHistoryExpanded,
-    archiveResults,
-    deleteFromHistory,
-    deleteBatch,
+    addResult,
+    clearCurrent,
+    openItem,
+    closeItem,
+    deleteItem,
     deleteAllHistory,
+    updateItem,
     updateSettings,
-    pruneHistory,
-    updateFrameOverride,
-    updateWarningCollapsed,
     purgeFrameOverride,
   };
 }

@@ -196,9 +196,12 @@ export function ResultCard({
           <p className="text-sm font-medium truncate" title={filename}>
             {filename}
           </p>
-          <Badge variant="secondary" className="mt-0.5">
-            {processingTime.toFixed(0)}ms
-          </Badge>
+          <div className="mt-0.5 flex flex-wrap gap-1">
+            <Badge variant="secondary">{processingTime.toFixed(0)}ms</Badge>
+            {result.alreadyProcessed && (
+              <Badge variant="outline">Already processed</Badge>
+            )}
+          </div>
         </div>
         {onDelete && (
           <CardAction>
@@ -206,7 +209,8 @@ export function ResultCard({
               variant="destructive"
               size="icon"
               onClick={onDelete}
-              aria-label="Delete result"
+              aria-label="Close result"
+              title="Close (stays in history)"
               className="size-7"
             >
               <X />
