@@ -29,6 +29,11 @@ export interface WarpOptions {
   scale?: number;
   threshold?: number;
   debug?: DebugCollector;
+  /**
+   * Optional out-param: warp fills in quality stats the orchestrator uses
+   * for processing-issue reporting (works without `debug`).
+   */
+  stats?: { quadScore?: number };
 }
 
 export function warp(input: GBImageData, options?: WarpOptions): GBImageData {
@@ -46,6 +51,7 @@ export function warp(input: GBImageData, options?: WarpOptions): GBImageData {
   // a — Detect screen corners
   const detection = findScreenCornersWithMetrics(bgr, threshVal);
   const corners = detection.ordered;
+  if (options?.stats) options.stats.quadScore = detection.score;
 
   if (dbg) {
     dbg.log(

@@ -1,4 +1,4 @@
-import type { PipelineResult, GBImageData } from "gbcam-extract";
+import type { PipelineResult, GBImageData, PipelineIssue } from "gbcam-extract";
 
 /**
  * Serialized form of GBImageData using PNG encoding for maximum efficiency.
@@ -24,6 +24,9 @@ export interface SerializedGBImageData {
 export interface SerializedPipelineResult {
   _type: "PipelineResult";
   grayscale: SerializedGBImageData;
+  /** Processing-quality issues detected during the run (absent on items
+   *  serialized by older versions). */
+  issues?: PipelineIssue[];
 }
 
 /**
@@ -134,6 +137,7 @@ export function serializePipelineResult(
   return {
     _type: "PipelineResult",
     grayscale: serializeGBImageData(result.grayscale),
+    ...(result.issues?.length ? { issues: result.issues } : {}),
   };
 }
 
@@ -145,7 +149,7 @@ export async function deserializePipelineResult(
   serialized: SerializedPipelineResult,
 ): Promise<PipelineResult> {
   const grayscale = await deserializeGBImageData(serialized.grayscale);
-  return { grayscale };
+  return { grayscale, ...(serialized.issues ? { issues: serialized.issues } : {}) };
 }
 
 /**

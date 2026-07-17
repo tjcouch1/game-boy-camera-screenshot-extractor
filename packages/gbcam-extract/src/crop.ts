@@ -11,6 +11,14 @@ import { type DebugCollector, cloneImage, strokeRect } from "./debug.js";
 export interface CropOptions {
   scale?: number;
   debug?: DebugCollector;
+  /**
+   * Optional out-param: crop fills in the inner-border-to-white-frame
+   * brightness ratio the orchestrator uses for processing-issue reporting
+   * (works without `debug`). Healthy photos measure 0.78–0.96; a ratio near
+   * or above 1 means the border reads as bright as the frame — a warp/
+   * correct anomaly.
+   */
+  stats?: { borderToFrameRatio?: number };
 }
 
 /**
@@ -53,10 +61,16 @@ export function crop(input: GBImageData, options?: CropOptions): GBImageData {
     );
   }
 
+  // Brightness validation: inner border band should be darker than the white
+  // frame. Computed unconditionally — the ratio also feeds processing-issue
+  // reporting via options.stats.
+  const borderMean = bandMean(input, x1 - scale, y1, scale, outH); // left border band
+  const whiteMean = bandMean(input, 20 * scale, 1 * scale, 120 * scale, 3 * scale);
+  if (options?.stats) {
+    options.stats.borderToFrameRatio = borderMean / Math.max(whiteMean, 1);
+  }
+
   if (dbg) {
-    // Brightness validation: inner border band should be darker than the white frame
-    const borderMean = bandMean(input, x1 - scale, y1, scale, outH); // left border band
-    const whiteMean = bandMean(input, 20 * scale, 1 * scale, 120 * scale, 3 * scale);
     const ok = borderMean < whiteMean * 0.85;
     dbg.log(
       `[crop] inner-border mean=${borderMean.toFixed(1)} ` +

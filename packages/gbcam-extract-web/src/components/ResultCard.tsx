@@ -22,6 +22,7 @@ import {
 import { toast } from "sonner";
 import { X, Download, Share2, Copy as CopyIcon } from "lucide-react";
 import { FramePicker } from "./FramePicker.js";
+import { ProcessingIssuesWarning } from "./ProcessingIssuesWarning.js";
 import type { FrameSelection } from "../types/frame-selection.js";
 import { buildOutputCanvas } from "../utils/buildOutputCanvas.js";
 
@@ -202,6 +203,11 @@ export function ResultCard({
           </CardAction>
         )}
       </CardHeader>
+      {result.issues && result.issues.length > 0 && (
+        <div className="mb-3">
+          <ProcessingIssuesWarning issues={result.issues} />
+        </div>
+      )}
       <CardContent className="flex flex-col sm:flex-row gap-3 p-0">
         <canvas
           ref={canvasRef}

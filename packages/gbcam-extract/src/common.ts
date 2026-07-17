@@ -34,8 +34,32 @@ export interface GBImageData {
 }
 
 // ─── Pipeline API types ───
+
+/**
+ * Machine-readable codes for detected processing-quality issues. Each is a
+ * high-certainty signal measured against the reference corpora — it fires on
+ * photos that genuinely processed poorly and on essentially no clean photo.
+ */
+export type PipelineIssueCode = "blur" | "frame-anomaly" | "corner-detection";
+
+/** A detected processing-quality issue the UI can surface to the user. */
+export interface PipelineIssue {
+  code: PipelineIssueCode;
+  /**
+   * Short human-readable reason phrase, phrased to fit a sentence like
+   * "This picture may have processed with low accuracy due to ___".
+   */
+  reason: string;
+}
+
 export interface PipelineResult {
   grayscale: GBImageData;
+  /**
+   * Processing-quality issues detected during the run (empty when the photo
+   * processed cleanly). Optional so results serialized by older versions
+   * still deserialize.
+   */
+  issues?: PipelineIssue[];
   intermediates?: {
     locate: GBImageData;
     warp: GBImageData;

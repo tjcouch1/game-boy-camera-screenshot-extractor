@@ -76,6 +76,9 @@ async function main() {
     );
     for (const line of result.debug.log) console.log(line);
   }
+  if (result.issues?.length) {
+    console.log(`\nISSUES: ${JSON.stringify(result.issues)}`);
+  }
   console.log(`\nWrote ${join(outDir, `${stem}_gbcam.png`)}`);
 }
 
