@@ -29,7 +29,9 @@ export function ProcessingIssuesAlert({
   onCollapse: () => void;
 }) {
   return (
-    <Alert>
+    // text-warning colors the icon (via the alert's text-current svg rule)
+    // and the title; the description keeps its muted foreground.
+    <Alert className="text-warning border-warning/40">
       <TriangleAlert />
       <AlertTitle>Possible low accuracy</AlertTitle>
       <AlertDescription>
@@ -70,7 +72,7 @@ export function ProcessingIssuesIcon({
       aria-label="Show processing quality warning"
       title="Possible processing quality issues"
       onClick={onExpand}
-      className={cn("size-7 text-destructive", className)}
+      className={cn("size-7 text-warning", className)}
     >
       <TriangleAlert />
     </Button>
