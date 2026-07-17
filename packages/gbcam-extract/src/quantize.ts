@@ -1553,7 +1553,10 @@ export function quantize(
     // fix 23 / break 0; the un-gated version breaks 17+.
     {
       const R_BAND = 25;
-      const R_MARGIN = 10;
+      // Margin re-tuned after the row-phase retry landed: on row-phase-
+      // corrected samples the DG/LG rank is break-free down to margin 4
+      // (the B gate carries the precision); 6 keeps headroom.
+      const R_MARGIN = 6;
       const dgRC = globalCentersPO[1 * 2];
       const lgRC = globalCentersPO[2 * 2];
       const rMid = (dgRC + lgRC) / 2;

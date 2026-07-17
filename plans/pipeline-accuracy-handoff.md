@@ -193,6 +193,16 @@ them the row-phase map is an untried refinement.
 - (2026-07-10) bk≥4 tier WITHOUT the dg≤1 gate: park-1-full (74,54)
   breaks at f=0.58/bRel=0.23 — overlaps the prison error distribution;
   only the DG-neighbour count separates them.
+- (2026-07-11) **frame-anchor kNN classification (`frameAwareQuantize`)
+  is a measured dead end**, not just a risky rewrite: run standalone on
+  tier-1 images it scores 82–87% (1800–2500 wrong px/image vs the
+  pipeline's 1–3) and gets only 1 of 7 current error pixels right. The
+  frame's colour anchors do not transfer to camera-area classification
+  at anywhere near the needed precision, so it can't even serve as an
+  ambiguous-band tiebreak vote. Remove from the "big levers" list.
+- (2026-07-11) LG/WH vertical-rank margin below 10: only breaks on the
+  post-row-phase residual (fix 0 / break 3-36). Current constants are
+  at the break-free optimum.
 
 ## Remaining error landscape (what's left to attack)
 
