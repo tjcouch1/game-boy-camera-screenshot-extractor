@@ -39,6 +39,11 @@ export function sample(
   options?: SampleOptions,
 ): GBImageData {
   const scale = options?.scale ?? 8;
+  // Rows skipped at the top and bottom of every scale×scale block (1 at
+  // scale 8, so rows 1–6 are averaged). The skipped rows are where the LCD's
+  // horizontal pixel-gap line and vertical bleed from the neighbouring GB
+  // row live; sampling them would drag every reading toward its vertical
+  // neighbours.
   const vMargin = options?.marginV ?? Math.max(1, Math.floor(scale / 5));
   const dbg = options?.debug;
 
@@ -74,8 +79,18 @@ export function sample(
   // images measure within ±8% of flat, so they are untouched), then
   // bilinearly interpolate per block.
   const ROWPHASE_ENABLED = options?.rowPhase ?? false;
+  // 4×4 regions (32×28 GB px each): fine enough to track the measured
+  // spatial variation (+4 px in one corner tapering to 0 across the image),
+  // coarse enough that each region has plenty of dither to measure.
   const GRID_X = 4, GRID_Y = 4;
+  // Offsets searched, in warp pixels. ±half a GB pixel (4 at scale 8) is the
+  // physical limit — beyond that the "shift" would really be a whole-pixel
+  // warp failure that this correction must not paper over. The asymmetry
+  // (−3..+4) matches the observed failure direction (content sags DOWN).
   const OFF_MIN = -3, OFF_MAX = 4;
+  // A region's best offset must beat offset 0 by ≥15% alternation energy.
+  // Measured: sharp, well-aligned images peak at 0 with all ratios ≤ 1.08;
+  // the blurred capture's misphased regions measure 1.45–3.2.
   const RATIO_GATE = 1.15;
   const regionOffset = new Float32Array(GRID_X * GRID_Y);
   if (ROWPHASE_ENABLED) {

@@ -38,6 +38,10 @@ export interface WarpOptions {
 
 export function warp(input: GBImageData, options?: WarpOptions): GBImageData {
   const scale = options?.scale ?? 8;
+  // Starting brightness threshold for finding the white filmstrip frame
+  // (#FFFFA5 reads ≈200+ even when dimmed; the surrounding LCD-black ring
+  // reads far below). This is only the first attempt — corner detection
+  // steps the threshold down internally when no acceptable quad is found.
   const threshVal = options?.threshold ?? 180;
   const dbg = options?.debug;
 
@@ -119,6 +123,9 @@ export function warp(input: GBImageData, options?: WarpOptions): GBImageData {
   // Default to the fully-refined warp2; only fall back to an earlier pass
   // when it is better-aligned by a clear margin, so converging images
   // (every reliable photo) are completely unaffected.
+  // 1.5 px = well above the ~0.5 px run-to-run noise of the edge-offset
+  // measurement, well below the ~8 px (one GB pixel) divergence a blurry
+  // doubled edge produces — anywhere in that range behaves the same.
   const DIVERGENCE_MARGIN = 1.5;
   const candidates: Array<{ warped: any; M: any; maxOff: number }> = [
     { warped: init.warped, M: init.M, maxOff: m0 },

@@ -55,7 +55,14 @@ export interface QuantizeOptions {
 }
 
 // ─── RGB palette matching the Python COLOR_PALETTE_RGB ───
-// BK=(0,0,0), DG=(148,148,255), LG=(255,148,148), WH=(255,255,165)
+// R and G of the four on-screen palette colours: BK=(0,0,0), DG=(148,148,255),
+// LG=(255,148,148), WH=(255,255,165). These are the "targets" every
+// cluster→palette assignment measures against. B is deliberately excluded
+// from clustering: the front light both blue-tints everything and bleeds B
+// between neighbouring pixels, so B only appears in later steps as a
+// *relative* tiebreak signal, never as a clustering dimension (3D k-means
+// with a B axis was measured catastrophic — see
+// plans/pipeline-accuracy-handoff.md "dead ends").
 const PALETTE_RG: [number, number][] = [
   [0, 0],
   [148, 148],
@@ -63,7 +70,12 @@ const PALETTE_RG: [number, number][] = [
   [255, 255],
 ];
 
-// Warm initialisation centres for global k-means (RG plane)
+// Warm initialisation centres for global k-means (RG plane). These are NOT
+// the palette targets: they anticipate how the camera/front-light shifts each
+// colour — BK is lifted well off (0,0) by front-light reflection (observed
+// centers R 59–122, G 15–39), while LG/WH land slightly below their targets.
+// Starting near the *observed* cluster locations keeps the warm-started
+// k-means from wandering during the first assignment pass.
 const INIT_CENTERS_RG: [number, number][] = [
   [80, 20],
   [148, 148],
@@ -228,6 +240,9 @@ function runKmeans3D(
       }
       labelsMat.data32S[i] = bestK;
     }
+    // Run to convergence for practical purposes: stop when centers move
+    // < 0.1 (well under a colour level) or after 300 iterations, whichever
+    // comes first. Warm-started k-means converges in far fewer.
     const criteria = new cv.TermCriteria(
       cv.TermCriteria_EPS + cv.TermCriteria_MAX_ITER,
       300,
@@ -357,9 +372,14 @@ function gValleyThreshold(
     return (lgCenterG + whCenterG) / 2.0;
   }
 
+  // σ=3 G-levels of smoothing: enough to iron dither noise out of the
+  // histogram without erasing the LG/WH dip itself (the modes sit ~60-100
+  // G-levels apart).
   const smooth = gaussianFilter1d(hist, 3.0);
 
-  // Search from upper 2/3 of range
+  // Search only the upper 2/3 of [lgCenterG, whCenterG]: the LG mode's own
+  // falling slope occupies the lower third, and a minimum found there would
+  // just be the edge of the LG cluster, not the between-modes valley.
   let searchLo = Math.floor((smooth.length * 2) / 3);
   let valleyIdx = searchLo;
   let minVal = smooth[searchLo];
@@ -519,6 +539,13 @@ export function quantize(
   }
 
   // ── 2. Strip k-means refinement ──
+  // Re-cluster in overlapping vertical strips so cluster centers can follow
+  // the front-light's LEFT↔RIGHT brightness gradient (the global centers are
+  // one-size-fits-all). 32-px-wide strips every 16 px means each column is
+  // covered by up to two strips; a pixel's global label is only overridden
+  // when NO covering strip agrees with it (a conservative consensus vote —
+  // see the loop below). Narrower strips adapt more but have too few pixels
+  // per cluster to be stable.
   const stripWidth = 32;
   const step = 16;
   const nStrips = Math.floor((CAM_W - stripWidth) / step) + 1;
@@ -562,6 +589,11 @@ export function quantize(
     // This anchors per-strip drift (which over-classifies borderline pixels)
     // while still allowing local adaptation to brightness gradients.
     const blendedCenters = new Float32Array(4 * 2);
+    // 27% pull toward the global centers: pure per-strip centers drift into
+    // whatever content dominates the strip and over-classify borderline
+    // pixels; pure global ignores the gradient. Tuned on the reference
+    // corpus — raising it makes strips useless, lowering it reintroduces
+    // strip-drift errors.
     const ANCHOR_W = 0.27; // weight on global (vs 1 - ANCHOR_W on strip)
     const stripCentersPO = new Float32Array(4 * 2);
     for (let pi = 0; pi < 4; pi++) {
@@ -768,7 +800,9 @@ export function quantize(
     const lgCG = global.centers[lgClusterIdx * 2 + 1]; // G component of LG center
     const whCG = global.centers[whClusterIdx * 2 + 1]; // G component of WH center
 
-    // Collect G values of high-R pixels (R > 190)
+    // Collect G values of high-R pixels. R > 190 selects warm pixels (LG and
+    // WH both have palette R=255; BK/DG sit far below) so the histogram the
+    // valley search runs on contains only the two modes we want to split.
     const gHighR: number[] = [];
     for (let i = 0; i < N; i++) {
       if (flatRG[i * 2] > 190) {
@@ -802,7 +836,11 @@ export function quantize(
     if (options?.stats) options.stats.valleyClamped = valleyClamped;
     valleyThreshold = gThresh;
 
-    // Apply threshold to LG/WH pixels with high R
+    // Apply the threshold to warm-labelled pixels. The application gate
+    // (R > 170) is looser than the histogram gate (R > 190) on purpose:
+    // dim WH/LG pixels with bleed-suppressed R still deserve the corrected
+    // LG/WH split even though they were too ambiguous to vote on where the
+    // valley lies.
     for (let i = 0; i < N; i++) {
       if (
         flatRG[i * 2] > 170 &&
@@ -846,6 +884,9 @@ export function quantize(
         warmBcount++;
       }
     }
+    // ≥50 pixels per side so the class means are stable estimates; sep > 5
+    // skips images where B doesn't separate DG from warm at all (per-pixel
+    // B flips there are pure noise — B is itself bled between neighbours).
     if (dgBcount >= 50 && warmBcount >= 50) {
       const dgMeanB = dgBsum / dgBcount;
       const warmMeanB = warmBsum / warmBcount;
@@ -858,13 +899,19 @@ export function quantize(
         const dgR = globalCentersPO[1 * 2];
         const dgG = globalCentersPO[1 * 2 + 1];
         // Lower threshold: pixels currently DG with B below this look warm.
-        // Clamp to [175, 180] to protect against false flips in tests where
-        // DG and warm B distributions overlap (e.g., bathhouse-1, where
-        // dgMeanB-30 > 180) while still catching warm-but-DG-labeled pixels
-        // in tests with dim DG.
+        // NOTE: as written this expression is ALWAYS 195 — min(x, 180) can
+        // never exceed 180, so max(195, ·) always wins. The original intent
+        // (per the git history) was an image-relative clamp, but the fixed
+        // 195 is what every accuracy number since has been validated
+        // against, so treat "b < 195 looks warm" as the calibrated
+        // behaviour. If you retune this, retune the constant, not the
+        // dead min/max structure.
         const bDgLowThresh = Math.max(195, Math.min(dgMeanB - 30, 180));
-        // Upper threshold: pixels currently warm with B above this look DG
+        // NOTE: unused (dead) — the warm→DG branch below gates on
+        // `b > dgMeanB - 20` directly instead. Kept only to document the
+        // originally-intended relative threshold; safe to delete.
         const bWarmHiThresh = warmMeanB + sep * 0.6;
+        void bWarmHiThresh;
         let flippedFromDg = 0;
         let flippedToDg = 0;
         for (let i = 0; i < N; i++) {
@@ -886,7 +933,10 @@ export function quantize(
             }
           } else if ((lbl === 2 || lbl === 3) && b > dgMeanB - 20) {
             // Pixel labeled warm but B is in the DG range — require RG
-            // distance to also strongly indicate DG (much closer than warm)
+            // distance to also strongly indicate DG (much closer than warm).
+            // The required RG margin scales with B confidence: B at or above
+            // the DG mean allows a near-tie (0.95), B merely close to it
+            // demands DG be clearly closer (0.85). Squared distances.
             const dWarm = Math.min(dLG, dWH);
             const ratio = b >= dgMeanB ? 0.95 : 0.85;
             if (dDG < dWarm * ratio) {
@@ -912,6 +962,8 @@ export function quantize(
   // similar RGB. We iterate so newly-confident pixels in pass N+1 can
   // anchor still-ambiguous neighbours in subsequent passes.
   let confidenceRefineTotal = 0;
+  // 8 iterations is a ceiling, not a target — the loop breaks as soon as a
+  // pass changes nothing, and in practice converges in 2–5 passes.
   for (let iter = 0; iter < 8; iter++) {
     // Two-pass cluster mean: first using all pixels, then recompute using
     // only confident pixels so cluster centres aren't biased by
@@ -954,6 +1006,10 @@ export function quantize(
           dSecond = d;
         }
       }
+      // "Confident" = the runner-up class is ≥1.96× (squared distance)
+      // farther than the best class, i.e. ~1.4× in linear distance. Below
+      // that the pixel is close enough to a class boundary that its own
+      // colour shouldn't be trusted over its neighbours'.
       isConfident[i] = dBest > 0 && dSecond >= dBest * 1.96 ? 1 : 0;
     }
     // Recompute cluster means using only confident pixels — these
@@ -972,6 +1028,8 @@ export function quantize(
       cN3c[lbl]++;
     }
     for (let p = 0; p < 4; p++) {
+      // Only adopt the confident-only mean when it rests on enough pixels
+      // (>50) to be stable; sparse classes keep the all-pixel mean.
       if (cN3c[p] > 50) {
         cR3[p] = cR3c[p] / cN3c[p];
         cG3[p] = cG3c[p] / cN3c[p];
@@ -999,6 +1057,21 @@ export function quantize(
       }
       isConfident[i] = dBest > 0 && dSecond >= dBest * 1.96 ? 1 : 0;
     }
+    // Neighbour-vote parameters (all tuned on the reference corpus):
+    // WIN=7            15×15 search window — big enough to find same-colour
+    //                  pixels across a dither pattern, small enough to stay
+    //                  within one lighting region.
+    // MD_MAX=30        only neighbours within 30 manhattan-RGB of the pixel
+    //                  vote at all — a vote means "I look like you".
+    // SIGMA=15         vote weight falls off exp(-md/15), so a neighbour at
+    //                  the MD_MAX edge is worth ~13% of an identical one.
+    // AMBIG_DISCOUNT   ambiguous neighbours' votes count half — they may
+    //                  themselves be mislabelled.
+    // MIN_DOMINANCE=2  the winning class must out-vote the pixel's current
+    //                  class 2:1 to flip it (strong status-quo bias; flips
+    //                  here are expensive to get wrong).
+    // MIN_VOTE=0.1     and carry at least a token amount of absolute
+    //                  support (guards the all-votes-zero case).
     const WIN = 7;
     const MD_MAX = 30;
     const SIGMA = 15;
@@ -1014,6 +1087,9 @@ export function quantize(
     const PAL_R: [number, number, number, number] = [0, 148, 255, 255];
     const PAL_G: [number, number, number, number] = [0, 148, 148, 255];
     const PAL_B: [number, number, number, number] = [0, 255, 148, 165];
+    // Deliberately small: a fully decisive palette match (margin 1.0) is
+    // worth ~one similar-RGB neighbour at md≈30. The palette vote should
+    // only tip near-ties, never outshout the local evidence.
     const PAL_VOTE_SCALE = 0.12;
     let refined = 0;
     const newLabels = new Uint8Array(finalLabels);
@@ -1164,8 +1240,10 @@ export function quantize(
   // only on columns with a genuinely bimodal LG/WH G distribution.
   {
     let colFlipped = 0;
-    const MIN_PTS = 12;
+    const MIN_PTS = 12; // fewer warm pixels than this can't form a usable histogram
     const MIN_SPREAD = 40; // LG/WH G levels must be this far apart in the column
+    // (palette gap is 107; blur/bleed compress it, but below ~40 the two
+    // levels are too merged for a per-column split to be trustworthy)
     const MIN_DEPTH = 0.6; // valley must be ≤ this × the smaller peak (a real dip)
     // Only the outermost columns: the bright filmstrip frame bleeds light
     // horizontally into them, which (compounded with vertical bleed) is what
@@ -1195,8 +1273,12 @@ export function quantize(
       const hist = new Array<number>(nb).fill(0);
       for (const g of gv)
         hist[Math.min(nb - 1, Math.max(0, Math.round(g - lo)))]++;
+      // Smoothing σ scales with the range (1/12 of it, min 2) so wide
+      // histograms don't stay noisy and narrow ones aren't flattened.
       const sm = gaussianFilter1d(hist, Math.max(2, (hi - lo) / 12));
       // Tallest peak, then the tallest peak separated from it by a dip.
+      // The second mode must be at least 1/6 of the range away — closer
+      // "peaks" are just texture on the flank of the first mode.
       let p1 = 0;
       for (let k = 1; k < nb; k++) if (sm[k] > sm[p1]) p1 = k;
       let p2 = -1;
@@ -1328,6 +1410,10 @@ export function quantize(
   if (options?.warped) {
     const wq = options.warped;
     const sc = options?.scale ?? Math.round(wq.width / SCREEN_W);
+    // Inner-block window: rows/cols [sc/4, 3sc/4) of each scale×scale block
+    // (rows 2–5 at scale 8). Skips the block borders where LCD pixel gaps
+    // and neighbour bleed contaminate the reading — same idea as sample()'s
+    // vMargin, just a bit more aggressive since these reads feed thresholds.
     const m0 = Math.max(1, Math.floor(sc / 4));
     const m1 = Math.max(m0 + 1, Math.ceil((sc * 3) / 4));
     // Mean warp R and G over the inner block of each camera pixel.

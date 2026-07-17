@@ -44,6 +44,12 @@ import { fitBivariateSurface } from "./poly-surface.js";
 
 // ─── Constants ───
 
+// Post-correction target values for the two reference surfaces: the dark
+// reference (the DG inner border, palette gray value 82) and the white
+// reference (the WH frame, 255). The per-pixel affine correction maps
+// observed [dark surface, white surface] onto [TRUE_DARK, TRUE_WHITE], so
+// after correction a perfectly-read DG pixel lands at 82 and WH at 255 —
+// i.e. the same gray scale quantize's reference palette uses.
 const TRUE_DARK = 82;
 const TRUE_WHITE = 255;
 
@@ -68,8 +74,18 @@ export function correct(
   options?: CorrectOptions,
 ): GBImageData {
   const scale = options?.scale ?? 8;
+  // Degree-2 bivariate polynomial for the brightness surfaces: the
+  // bottom-mounted front-light produces one smooth 2D gradient, which a
+  // quadratic captures; higher degrees start fitting content instead of
+  // lighting (the same failure that killed the white-surface interior
+  // refinement — see plans/pipeline-accuracy-handoff.md).
   const polyDegree = options?.polyDegree ?? 2;
+  // Smoothing window (in GB px) applied along the inner-border dark samples
+  // before fitting — the 1-px-wide border is noisy per-pixel.
   const darkSmooth = options?.darkSmooth ?? 13;
+  // One refinement pass: re-fit the dark surface using confident interior DG
+  // pixels found after the first correction. More passes were not measured
+  // to help.
   const refinePasses = options?.refinePasses ?? 1;
   const dbg = options?.debug;
 
