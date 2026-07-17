@@ -45,10 +45,24 @@ export interface QuantizeOptions {
   warped?: GBImageData;
   scale?: number;
   debug?: DebugCollector;
+  /**
+   * Optional out-param: quantize sets flags the orchestrator can react to.
+   * `valleyClamped` = the LG/WH G-valley landed implausibly high (the
+   * blur-filled-gap signature) — the caller may re-run `sample` with
+   * row-phase correction and quantize again.
+   */
+  stats?: { valleyClamped?: boolean };
 }
 
 // ─── RGB palette matching the Python COLOR_PALETTE_RGB ───
-// BK=(0,0,0), DG=(148,148,255), LG=(255,148,148), WH=(255,255,165)
+// R and G of the four on-screen palette colours: BK=(0,0,0), DG=(148,148,255),
+// LG=(255,148,148), WH=(255,255,165). These are the "targets" every
+// cluster→palette assignment measures against. B is deliberately excluded
+// from clustering: the front light both blue-tints everything and bleeds B
+// between neighbouring pixels, so B only appears in later steps as a
+// *relative* tiebreak signal, never as a clustering dimension (3D k-means
+// with a B axis was measured catastrophic — see
+// plans/pipeline-accuracy-handoff.md "dead ends").
 const PALETTE_RG: [number, number][] = [
   [0, 0],
   [148, 148],
@@ -56,7 +70,12 @@ const PALETTE_RG: [number, number][] = [
   [255, 255],
 ];
 
-// Warm initialisation centres for global k-means (RG plane)
+// Warm initialisation centres for global k-means (RG plane). These are NOT
+// the palette targets: they anticipate how the camera/front-light shifts each
+// colour — BK is lifted well off (0,0) by front-light reflection (observed
+// centers R 59–122, G 15–39), while LG/WH land slightly below their targets.
+// Starting near the *observed* cluster locations keeps the warm-started
+// k-means from wandering during the first assignment pass.
 const INIT_CENTERS_RG: [number, number][] = [
   [80, 20],
   [148, 148],
@@ -94,11 +113,12 @@ function gaussianFilter1d(input: number[], sigma: number): number[] {
 }
 
 /**
- * Find all permutations of [0,1,2,3]. Used for cluster-to-palette matching.
+ * Find all permutations of the given array. Used for cluster-to-palette
+ * matching (k ≤ 4 clusters, so at most 24 permutations).
  */
-function permutations4(): number[][] {
+function permutationsOf(items: number[]): number[][] {
   const result: number[][] = [];
-  const arr = [0, 1, 2, 3];
+  const arr = [...items];
   function permute(start: number) {
     if (start === arr.length) {
       result.push([...arr]);
@@ -115,19 +135,22 @@ function permutations4(): number[][] {
 }
 
 /**
- * Find the best permutation mapping clusters -> palette indices
- * that minimizes total RG Euclidean distance.
+ * Find the best assignment of clusters -> palette indices (restricted to the
+ * given present palette indices) that minimizes total RG Euclidean distance.
+ * `centersRG` holds k = presentPalette.length cluster centers; the result maps
+ * cluster index -> palette index.
  */
 function bestClusterToPalette(
   centersRG: Float32Array,
   targetsRG: [number, number][],
+  presentPalette: number[],
 ): Int32Array {
-  const perms = permutations4();
+  const perms = permutationsOf(presentPalette);
   let bestPerm: number[] = perms[0];
   let bestCost = Infinity;
   for (const perm of perms) {
     let cost = 0;
-    for (let i = 0; i < 4; i++) {
+    for (let i = 0; i < perm.length; i++) {
       const cr = centersRG[i * 2];
       const cg = centersRG[i * 2 + 1];
       const tr = targetsRG[perm[i]][0];
@@ -140,6 +163,46 @@ function bestClusterToPalette(
     }
   }
   return new Int32Array(bestPerm);
+}
+
+/**
+ * Validate a cluster→palette assignment: a cluster assigned to a palette
+ * colour whose center is far more than RATIO× closer to a *different*
+ * palette target is not that colour at all — it's a cluster that migrated
+ * into another colour's cloud because the assigned colour barely exists in
+ * the image (e.g. a photo with no black: the forced 4th cluster splits a
+ * warm cloud and the bijection labels real warm pixels BK). Returns the
+ * palette indices whose clusters failed validation.
+ *
+ * This deliberately tests the CLUSTER, not a pixel count: an image with only
+ * a handful of genuine pixels of a colour still anchors a small warm-started
+ * cluster near that colour's target and passes. Measured across all corpora:
+ * every real cluster has ratio ≤ 1.01 for BK (≤ 2.7 for gradient-shifted
+ * warm clusters), while the no-BK image's migrated "BK" cluster sits at 4.8.
+ */
+function invalidClusterColors(
+  centersRG: Float32Array,
+  clusterToPalette: Int32Array,
+  targetsRG: [number, number][],
+): number[] {
+  const RATIO = 3;
+  const dropped: number[] = [];
+  for (let ci = 0; ci < clusterToPalette.length; ci++) {
+    const pi = clusterToPalette[ci];
+    const cr = centersRG[ci * 2];
+    const cg = centersRG[ci * 2 + 1];
+    const dAssigned = Math.hypot(cr - targetsRG[pi][0], cg - targetsRG[pi][1]);
+    let dOther = Infinity;
+    for (let q = 0; q < 4; q++) {
+      if (q === pi) continue;
+      dOther = Math.min(
+        dOther,
+        Math.hypot(cr - targetsRG[q][0], cg - targetsRG[q][1]),
+      );
+    }
+    if (dAssigned > RATIO * dOther) dropped.push(pi);
+  }
+  return dropped;
 }
 
 /**
@@ -177,6 +240,9 @@ function runKmeans3D(
       }
       labelsMat.data32S[i] = bestK;
     }
+    // Run to convergence for practical purposes: stop when centers move
+    // < 0.1 (well under a colour level) or after 300 iterations, whichever
+    // comes first. Warm-started k-means converges in far fewer.
     const criteria = new cv.TermCriteria(
       cv.TermCriteria_EPS + cv.TermCriteria_MAX_ITER,
       300,
@@ -200,7 +266,8 @@ function runKmeans3D(
 
 /**
  * Run cv.kmeans on an Nx2 float32 sample set with warm initialisation.
- * Returns { labels: Int32Array(N), centers: Float32Array(4*2) }
+ * The cluster count k is taken from the number of init centers (2–4).
+ * Returns { labels: Int32Array(N), centers: Float32Array(k*2) }
  */
 function runKmeans(
   samplesRG: Float32Array,
@@ -208,6 +275,10 @@ function runKmeans(
   initCenters: [number, number][] | Float32Array,
 ): { labels: Int32Array; centers: Float32Array } {
   const cv = getCV();
+  const k =
+    initCenters instanceof Float32Array
+      ? initCenters.length / 2
+      : initCenters.length;
   return withMats((track) => {
     // Build Nx2 samples Mat
     const samplesMat = track(new cv.Mat(n, 2, cv.CV_32F));
@@ -217,18 +288,7 @@ function runKmeans(
     const labelsMat = track(new cv.Mat(n, 1, cv.CV_32S));
 
     // Build centers output
-    const centersMat = track(new cv.Mat(4, 2, cv.CV_32F));
-
-    // Build initial centers for warm start
-    const initMat = track(new cv.Mat(4, 2, cv.CV_32F));
-    if (initCenters instanceof Float32Array) {
-      initMat.data32F.set(initCenters);
-    } else {
-      for (let i = 0; i < 4; i++) {
-        initMat.data32F[i * 2] = initCenters[i][0];
-        initMat.data32F[i * 2 + 1] = initCenters[i][1];
-      }
-    }
+    const centersMat = track(new cv.Mat(k, 2, cv.CV_32F));
 
     // Use warm start: set labels from initial centers via nearest assignment
     // then use KMEANS_USE_INITIAL_LABELS
@@ -240,19 +300,19 @@ function runKmeans(
       let bestK = 0;
       let bestD = Infinity;
       const ic = initCenters instanceof Float32Array ? initCenters : null;
-      for (let k = 0; k < 4; k++) {
+      for (let ki = 0; ki < k; ki++) {
         let cr: number, cg: number;
         if (ic) {
-          cr = ic[k * 2];
-          cg = ic[k * 2 + 1];
+          cr = ic[ki * 2];
+          cg = ic[ki * 2 + 1];
         } else {
-          cr = (initCenters as [number, number][])[k][0];
-          cg = (initCenters as [number, number][])[k][1];
+          cr = (initCenters as [number, number][])[ki][0];
+          cg = (initCenters as [number, number][])[ki][1];
         }
         const d = (r - cr) ** 2 + (g - cg) ** 2;
         if (d < bestD) {
           bestD = d;
-          bestK = k;
+          bestK = ki;
         }
       }
       labelsMat.data32S[i] = bestK;
@@ -266,7 +326,7 @@ function runKmeans(
 
     cv.kmeans(
       samplesMat,
-      4,
+      k,
       labelsMat,
       criteria,
       1, // attempts=1 since we use initial labels
@@ -312,9 +372,14 @@ function gValleyThreshold(
     return (lgCenterG + whCenterG) / 2.0;
   }
 
+  // σ=3 G-levels of smoothing: enough to iron dither noise out of the
+  // histogram without erasing the LG/WH dip itself (the modes sit ~60-100
+  // G-levels apart).
   const smooth = gaussianFilter1d(hist, 3.0);
 
-  // Search from upper 2/3 of range
+  // Search only the upper 2/3 of [lgCenterG, whCenterG]: the LG mode's own
+  // falling slope occupies the lower third, and a minimum found there would
+  // just be the edge of the LG cluster, not the between-modes valley.
   let searchLo = Math.floor((smooth.length * 2) / 3);
   let valleyIdx = searchLo;
   let minVal = smooth[searchLo];
@@ -371,9 +436,49 @@ export function quantize(
     flatRG[i * 2 + 1] = input.data[i * 4 + 1];
   }
 
-  // ── 1. Global k-means ──
-  const global = runKmeans(flatRG, N, INIT_CENTERS_RG);
-  const clusterToPalette = bestClusterToPalette(global.centers, targetsRG);
+  // ── 1. Global k-means with cluster-assignment validation ──
+  // Always cluster with k=4 first, then validate that each colour's assigned
+  // cluster is plausibly that colour. An image may legitimately contain
+  // (almost) none of a colour — forcing 4 clusters then splits a present
+  // colour's cloud and the bijective match labels real pixels with the
+  // missing colour. When a cluster fails validation, drop its colour and
+  // re-cluster with k = valid colours. (Individual pixels of a dropped
+  // colour are recovered per-pixel at the end of the pipeline — dropping
+  // the CLUSTER never makes the colour unreachable.)
+  let presentPalette = [0, 1, 2, 3];
+  let global = runKmeans(flatRG, N, INIT_CENTERS_RG);
+  let clusterToPalette = bestClusterToPalette(
+    global.centers,
+    targetsRG,
+    presentPalette,
+  );
+  const droppedColors = invalidClusterColors(
+    global.centers,
+    clusterToPalette,
+    targetsRG,
+  );
+  if (droppedColors.length > 0 && 4 - droppedColors.length >= 2) {
+    presentPalette = [0, 1, 2, 3].filter((p) => !droppedColors.includes(p));
+    if (dbg) {
+      dbg.log(
+        `[quantize] cluster validation: ` +
+          droppedColors.map((p) => ["BK", "DG", "LG", "WH"][p]).join(", ") +
+          ` cluster(s) migrated away from their palette target — ` +
+          `re-clustering with k=${presentPalette.length}`,
+      );
+    }
+    global = runKmeans(
+      flatRG,
+      N,
+      presentPalette.map((p) => INIT_CENTERS_RG[p]),
+    );
+    clusterToPalette = bestClusterToPalette(
+      global.centers,
+      targetsRG,
+      presentPalette,
+    );
+  }
+  const kPresent = presentPalette.length;
 
   // Map cluster labels to palette indices
   const labelsFlat = new Int32Array(N);
@@ -386,7 +491,7 @@ export function quantize(
   for (let pi = 0; pi < 4; pi++) {
     let cr = targetsRG[pi][0];
     let cg = targetsRG[pi][1];
-    for (let ci = 0; ci < 4; ci++) {
+    for (let ci = 0; ci < kPresent; ci++) {
       if (clusterToPalette[ci] === pi) {
         cr = global.centers[ci * 2];
         cg = global.centers[ci * 2 + 1];
@@ -419,7 +524,7 @@ export function quantize(
   const globalCentersPO = new Float32Array(4 * 2);
   for (let pi = 0; pi < 4; pi++) {
     let found = false;
-    for (let ci = 0; ci < 4; ci++) {
+    for (let ci = 0; ci < kPresent; ci++) {
       if (clusterToPalette[ci] === pi) {
         globalCentersPO[pi * 2] = global.centers[ci * 2];
         globalCentersPO[pi * 2 + 1] = global.centers[ci * 2 + 1];
@@ -434,6 +539,13 @@ export function quantize(
   }
 
   // ── 2. Strip k-means refinement ──
+  // Re-cluster in overlapping vertical strips so cluster centers can follow
+  // the front-light's LEFT↔RIGHT brightness gradient (the global centers are
+  // one-size-fits-all). 32-px-wide strips every 16 px means each column is
+  // covered by up to two strips; a pixel's global label is only overridden
+  // when NO covering strip agrees with it (a conservative consensus vote —
+  // see the loop below). Narrower strips adapt more but have too few pixels
+  // per cluster to be stable.
   const stripWidth = 32;
   const step = 16;
   const nStrips = Math.floor((CAM_W - stripWidth) / step) + 1;
@@ -461,18 +573,32 @@ export function quantize(
       }
     }
 
-    const stripResult = runKmeans(stripRG, sN, globalCentersPO);
-    const c2p = bestClusterToPalette(stripResult.centers, targetsRG);
+    const stripInit = new Float32Array(kPresent * 2);
+    for (let ki = 0; ki < kPresent; ki++) {
+      stripInit[ki * 2] = globalCentersPO[presentPalette[ki] * 2];
+      stripInit[ki * 2 + 1] = globalCentersPO[presentPalette[ki] * 2 + 1];
+    }
+    const stripResult = runKmeans(stripRG, sN, stripInit);
+    const c2p = bestClusterToPalette(
+      stripResult.centers,
+      targetsRG,
+      presentPalette,
+    );
 
     // Build palette-ordered strip centers, then blend toward global centers.
     // This anchors per-strip drift (which over-classifies borderline pixels)
     // while still allowing local adaptation to brightness gradients.
     const blendedCenters = new Float32Array(4 * 2);
+    // 27% pull toward the global centers: pure per-strip centers drift into
+    // whatever content dominates the strip and over-classify borderline
+    // pixels; pure global ignores the gradient. Tuned on the reference
+    // corpus — raising it makes strips useless, lowering it reintroduces
+    // strip-drift errors.
     const ANCHOR_W = 0.27; // weight on global (vs 1 - ANCHOR_W on strip)
     const stripCentersPO = new Float32Array(4 * 2);
     for (let pi = 0; pi < 4; pi++) {
       let ci = -1;
-      for (let cj = 0; cj < 4; cj++) {
+      for (let cj = 0; cj < kPresent; cj++) {
         if (c2p[cj] === pi) {
           ci = cj;
           break;
@@ -499,9 +625,9 @@ export function quantize(
       for (let x = colStart; x < colEnd; x++) {
         const r = stripRG[idx * 2];
         const g = stripRG[idx * 2 + 1];
-        let bestPi = 0,
+        let bestPi = presentPalette[0],
           bestD = Infinity;
-        for (let pi = 0; pi < 4; pi++) {
+        for (const pi of presentPalette) {
           const dr = r - blendedCenters[pi * 2];
           const dg = g - blendedCenters[pi * 2 + 1];
           const d = dr * dr + dg * dg;
@@ -577,22 +703,106 @@ export function quantize(
     );
   }
 
+  // ── 2b. Fake-DG-cluster validation (blueness check) ──
+  // When true DG is nearly absent from the image, the DG cluster of the RG
+  // k-means migrates into the dim tail of the LG cloud — RG alone cannot
+  // tell "dim warm" from "true DG". But real DG is BLUE on screen (#9494FF):
+  // DG-labelled pixels' mean B sits well above LG's on every reference and
+  // held-out image with real DG (sep ≥ 14, typically 21–61), while a
+  // migrated cluster's B matches LG's (sep ≈ 0). If separation is missing,
+  // dissolve the cluster: reassign its pixels to LG/WH by RG distance and
+  // recover as DG only the pixels that are individually blue
+  // (B − R ≥ 12 — warm content always has R far above B).
+  {
+    const SEP_MIN = 8;
+    const BLUE_MIN = 12;
+    let dgBsum = 0,
+      dgN = 0,
+      lgBsum = 0,
+      lgN = 0,
+      warmBsum = 0,
+      warmN = 0;
+    for (let i = 0; i < N; i++) {
+      const b = input.data[i * 4 + 2];
+      if (finalLabels[i] === 1) {
+        dgBsum += b;
+        dgN++;
+      } else if (finalLabels[i] === 2) {
+        lgBsum += b;
+        lgN++;
+        warmBsum += b;
+        warmN++;
+      } else if (finalLabels[i] === 3) {
+        warmBsum += b;
+        warmN++;
+      }
+    }
+    const refB =
+      lgN >= 50 ? lgBsum / lgN : warmN >= 50 ? warmBsum / warmN : null;
+    // Fires when the DG cluster's B matches warm (a migrated cluster), and
+    // also when DG had no valid cluster at all (dropped by the assignment
+    // validation above) — the per-pixel blueness recovery below is how
+    // genuinely-blue pixels get their DG label back in that case.
+    const dgFake =
+      refB !== null &&
+      ((dgN > 0 && dgBsum / dgN - refB < SEP_MIN) ||
+        (dgN === 0 && !presentPalette.includes(1)));
+    if (dgFake && refB !== null) {
+      const lgR = globalCentersPO[2 * 2];
+      const lgG = globalCentersPO[2 * 2 + 1];
+      const whR = globalCentersPO[3 * 2];
+      const whG = globalCentersPO[3 * 2 + 1];
+      let dissolved = 0;
+      let recovered = 0;
+      for (let i = 0; i < N; i++) {
+        if (finalLabels[i] === 1) {
+          const r = flatRG[i * 2];
+          const g = flatRG[i * 2 + 1];
+          const dLG = (r - lgR) ** 2 + (g - lgG) ** 2;
+          const dWH = (r - whR) ** 2 + (g - whG) ** 2;
+          finalLabels[i] = dLG <= dWH ? 2 : 3;
+          dissolved++;
+        }
+        // Recover only warm-labelled pixels: BK pixels also read blue under
+        // the front-light tint (B − R ≈ +50 on dark LCD), so an unrestricted
+        // blueness flip would eat real black in a BK-present/DG-absent image.
+        if (
+          (finalLabels[i] === 2 || finalLabels[i] === 3) &&
+          input.data[i * 4 + 2] - flatRG[i * 2] >= BLUE_MIN
+        ) {
+          finalLabels[i] = 1;
+          recovered++;
+        }
+      }
+      if (dbg) {
+        dbg.log(
+          `[quantize] DG cluster failed blueness validation ` +
+            `(dgMeanB=${dgN > 0 ? (dgBsum / dgN).toFixed(1) : "n/a"} refB=${refB.toFixed(1)}): ` +
+            `dissolved ${dissolved} px into LG/WH, recovered ${recovered} blue px as DG`,
+        );
+      }
+    }
+  }
+
   // ── 3. G-valley LG/WH refinement ──
   // Find cluster indices for LG (palette 2) and WH (palette 3)
   let lgClusterIdx = -1;
   let whClusterIdx = -1;
-  for (let ci = 0; ci < 4; ci++) {
+  for (let ci = 0; ci < kPresent; ci++) {
     if (clusterToPalette[ci] === 2) lgClusterIdx = ci;
     if (clusterToPalette[ci] === 3) whClusterIdx = ci;
   }
 
   let valleyThreshold: number | null = null;
   let valleyChanged = 0;
+  let valleyClamped = false;
   if (lgClusterIdx >= 0 && whClusterIdx >= 0) {
     const lgCG = global.centers[lgClusterIdx * 2 + 1]; // G component of LG center
     const whCG = global.centers[whClusterIdx * 2 + 1]; // G component of WH center
 
-    // Collect G values of high-R pixels (R > 190)
+    // Collect G values of high-R pixels. R > 190 selects warm pixels (LG and
+    // WH both have palette R=255; BK/DG sit far below) so the histogram the
+    // valley search runs on contains only the two modes we want to split.
     const gHighR: number[] = [];
     for (let i = 0; i < N; i++) {
       if (flatRG[i * 2] > 190) {
@@ -600,10 +810,37 @@ export function quantize(
       }
     }
 
-    const gThresh = gValleyThreshold(gHighR, lgCG, whCG);
+    let gThresh = gValleyThreshold(gHighR, lgCG, whCG);
+
+    // Sanity-clamp the valley. On a sharp image the LG and WH G-modes have a
+    // real density gap, and the found valley sits just above the midpoint of
+    // the two cluster centers (measured +6..+15 across every reference
+    // image). Heavy blur fills the gap with partially-mixed WH pixels, so
+    // the density minimum migrates to the top of the mixing band — far above
+    // the class boundary — and the "valley" then mislabels the whole dimmed
+    // WH population as LG (measured +46 on the blurry d-1, costing ~800 px).
+    // When the valley lands implausibly high, fall back to the empirical
+    // prior instead: midpoint + 10 (the center of the healthy range).
+    const midCG = (lgCG + whCG) / 2;
+    if (gThresh > midCG + 25) {
+      if (dbg) {
+        dbg.log(
+          `[quantize] G-valley ${gThresh.toFixed(1)} is implausibly far above ` +
+            `the LG/WH center midpoint ${midCG.toFixed(1)} (blur-filled gap) — ` +
+            `falling back to midpoint+10`,
+        );
+      }
+      gThresh = midCG + 10;
+      valleyClamped = true;
+    }
+    if (options?.stats) options.stats.valleyClamped = valleyClamped;
     valleyThreshold = gThresh;
 
-    // Apply threshold to LG/WH pixels with high R
+    // Apply the threshold to warm-labelled pixels. The application gate
+    // (R > 170) is looser than the histogram gate (R > 190) on purpose:
+    // dim WH/LG pixels with bleed-suppressed R still deserve the corrected
+    // LG/WH split even though they were too ambiguous to vote on where the
+    // valley lies.
     for (let i = 0; i < N; i++) {
       if (
         flatRG[i * 2] > 170 &&
@@ -647,6 +884,9 @@ export function quantize(
         warmBcount++;
       }
     }
+    // ≥50 pixels per side so the class means are stable estimates; sep > 5
+    // skips images where B doesn't separate DG from warm at all (per-pixel
+    // B flips there are pure noise — B is itself bled between neighbours).
     if (dgBcount >= 50 && warmBcount >= 50) {
       const dgMeanB = dgBsum / dgBcount;
       const warmMeanB = warmBsum / warmBcount;
@@ -659,13 +899,19 @@ export function quantize(
         const dgR = globalCentersPO[1 * 2];
         const dgG = globalCentersPO[1 * 2 + 1];
         // Lower threshold: pixels currently DG with B below this look warm.
-        // Clamp to [175, 180] to protect against false flips in tests where
-        // DG and warm B distributions overlap (e.g., bathhouse-1, where
-        // dgMeanB-30 > 180) while still catching warm-but-DG-labeled pixels
-        // in tests with dim DG.
+        // NOTE: as written this expression is ALWAYS 195 — min(x, 180) can
+        // never exceed 180, so max(195, ·) always wins. The original intent
+        // (per the git history) was an image-relative clamp, but the fixed
+        // 195 is what every accuracy number since has been validated
+        // against, so treat "b < 195 looks warm" as the calibrated
+        // behaviour. If you retune this, retune the constant, not the
+        // dead min/max structure.
         const bDgLowThresh = Math.max(195, Math.min(dgMeanB - 30, 180));
-        // Upper threshold: pixels currently warm with B above this look DG
+        // NOTE: unused (dead) — the warm→DG branch below gates on
+        // `b > dgMeanB - 20` directly instead. Kept only to document the
+        // originally-intended relative threshold; safe to delete.
         const bWarmHiThresh = warmMeanB + sep * 0.6;
+        void bWarmHiThresh;
         let flippedFromDg = 0;
         let flippedToDg = 0;
         for (let i = 0; i < N; i++) {
@@ -687,7 +933,10 @@ export function quantize(
             }
           } else if ((lbl === 2 || lbl === 3) && b > dgMeanB - 20) {
             // Pixel labeled warm but B is in the DG range — require RG
-            // distance to also strongly indicate DG (much closer than warm)
+            // distance to also strongly indicate DG (much closer than warm).
+            // The required RG margin scales with B confidence: B at or above
+            // the DG mean allows a near-tie (0.95), B merely close to it
+            // demands DG be clearly closer (0.85). Squared distances.
             const dWarm = Math.min(dLG, dWH);
             const ratio = b >= dgMeanB ? 0.95 : 0.85;
             if (dDG < dWarm * ratio) {
@@ -713,6 +962,8 @@ export function quantize(
   // similar RGB. We iterate so newly-confident pixels in pass N+1 can
   // anchor still-ambiguous neighbours in subsequent passes.
   let confidenceRefineTotal = 0;
+  // 8 iterations is a ceiling, not a target — the loop breaks as soon as a
+  // pass changes nothing, and in practice converges in 2–5 passes.
   for (let iter = 0; iter < 8; iter++) {
     // Two-pass cluster mean: first using all pixels, then recompute using
     // only confident pixels so cluster centres aren't biased by
@@ -743,7 +994,7 @@ export function quantize(
       const b = input.data[i * 4 + 2];
       let dBest = Infinity;
       let dSecond = Infinity;
-      for (let p = 0; p < 4; p++) {
+      for (const p of presentPalette) {
         const d =
           (r - cR3[p]) * (r - cR3[p]) +
           (g - cG3[p]) * (g - cG3[p]) +
@@ -755,6 +1006,10 @@ export function quantize(
           dSecond = d;
         }
       }
+      // "Confident" = the runner-up class is ≥1.96× (squared distance)
+      // farther than the best class, i.e. ~1.4× in linear distance. Below
+      // that the pixel is close enough to a class boundary that its own
+      // colour shouldn't be trusted over its neighbours'.
       isConfident[i] = dBest > 0 && dSecond >= dBest * 1.96 ? 1 : 0;
     }
     // Recompute cluster means using only confident pixels — these
@@ -773,6 +1028,8 @@ export function quantize(
       cN3c[lbl]++;
     }
     for (let p = 0; p < 4; p++) {
+      // Only adopt the confident-only mean when it rests on enough pixels
+      // (>50) to be stable; sparse classes keep the all-pixel mean.
       if (cN3c[p] > 50) {
         cR3[p] = cR3c[p] / cN3c[p];
         cG3[p] = cG3c[p] / cN3c[p];
@@ -786,7 +1043,7 @@ export function quantize(
       const b = input.data[i * 4 + 2];
       let dBest = Infinity;
       let dSecond = Infinity;
-      for (let p = 0; p < 4; p++) {
+      for (const p of presentPalette) {
         const d =
           (r - cR3[p]) * (r - cR3[p]) +
           (g - cG3[p]) * (g - cG3[p]) +
@@ -800,6 +1057,21 @@ export function quantize(
       }
       isConfident[i] = dBest > 0 && dSecond >= dBest * 1.96 ? 1 : 0;
     }
+    // Neighbour-vote parameters (all tuned on the reference corpus):
+    // WIN=7            15×15 search window — big enough to find same-colour
+    //                  pixels across a dither pattern, small enough to stay
+    //                  within one lighting region.
+    // MD_MAX=30        only neighbours within 30 manhattan-RGB of the pixel
+    //                  vote at all — a vote means "I look like you".
+    // SIGMA=15         vote weight falls off exp(-md/15), so a neighbour at
+    //                  the MD_MAX edge is worth ~13% of an identical one.
+    // AMBIG_DISCOUNT   ambiguous neighbours' votes count half — they may
+    //                  themselves be mislabelled.
+    // MIN_DOMINANCE=2  the winning class must out-vote the pixel's current
+    //                  class 2:1 to flip it (strong status-quo bias; flips
+    //                  here are expensive to get wrong).
+    // MIN_VOTE=0.1     and carry at least a token amount of absolute
+    //                  support (guards the all-votes-zero case).
     const WIN = 7;
     const MD_MAX = 30;
     const SIGMA = 15;
@@ -815,6 +1087,9 @@ export function quantize(
     const PAL_R: [number, number, number, number] = [0, 148, 255, 255];
     const PAL_G: [number, number, number, number] = [0, 148, 148, 255];
     const PAL_B: [number, number, number, number] = [0, 255, 148, 165];
+    // Deliberately small: a fully decisive palette match (margin 1.0) is
+    // worth ~one similar-RGB neighbour at md≈30. The palette vote should
+    // only tip near-ties, never outshout the local evidence.
     const PAL_VOTE_SCALE = 0.12;
     let refined = 0;
     const newLabels = new Uint8Array(finalLabels);
@@ -854,10 +1129,10 @@ export function quantize(
       // existing G-valley step handle that. So we only count a palette
       // vote when palBest is BK or DG (where palette is decisive on
       // multiple channels).
-      let palBest = 0;
+      let palBest = presentPalette[0];
       let palBestD = Infinity;
       let palSecond = Infinity;
-      for (let p = 0; p < 4; p++) {
+      for (const p of presentPalette) {
         const dR = r - PAL_R[p];
         const dG = g - PAL_G[p];
         const dB = b - PAL_B[p];
@@ -965,8 +1240,10 @@ export function quantize(
   // only on columns with a genuinely bimodal LG/WH G distribution.
   {
     let colFlipped = 0;
-    const MIN_PTS = 12;
+    const MIN_PTS = 12; // fewer warm pixels than this can't form a usable histogram
     const MIN_SPREAD = 40; // LG/WH G levels must be this far apart in the column
+    // (palette gap is 107; blur/bleed compress it, but below ~40 the two
+    // levels are too merged for a per-column split to be trustworthy)
     const MIN_DEPTH = 0.6; // valley must be ≤ this × the smaller peak (a real dip)
     // Only the outermost columns: the bright filmstrip frame bleeds light
     // horizontally into them, which (compounded with vertical bleed) is what
@@ -996,8 +1273,12 @@ export function quantize(
       const hist = new Array<number>(nb).fill(0);
       for (const g of gv)
         hist[Math.min(nb - 1, Math.max(0, Math.round(g - lo)))]++;
+      // Smoothing σ scales with the range (1/12 of it, min 2) so wide
+      // histograms don't stay noisy and narrow ones aren't flattened.
       const sm = gaussianFilter1d(hist, Math.max(2, (hi - lo) / 12));
       // Tallest peak, then the tallest peak separated from it by a dip.
+      // The second mode must be at least 1/6 of the range away — closer
+      // "peaks" are just texture on the flank of the first mode.
       let p1 = 0;
       for (let k = 1; k < nb; k++) if (sm[k] > sm[p1]) p1 = k;
       let p2 = -1;
@@ -1129,22 +1410,29 @@ export function quantize(
   if (options?.warped) {
     const wq = options.warped;
     const sc = options?.scale ?? Math.round(wq.width / SCREEN_W);
+    // Inner-block window: rows/cols [sc/4, 3sc/4) of each scale×scale block
+    // (rows 2–5 at scale 8). Skips the block borders where LCD pixel gaps
+    // and neighbour bleed contaminate the reading — same idea as sample()'s
+    // vMargin, just a bit more aggressive since these reads feed thresholds.
     const m0 = Math.max(1, Math.floor(sc / 4));
     const m1 = Math.max(m0 + 1, Math.ceil((sc * 3) / 4));
-    // Mean warp R over the inner block of each camera pixel.
+    // Mean warp R and G over the inner block of each camera pixel.
     const warpRcam = new Float32Array(N);
+    const warpGcam = new Float32Array(N);
     for (let cy = 0; cy < CAM_H; cy++) {
       for (let cx = 0; cx < CAM_W; cx++) {
         const sx = (cx + FRAME_THICK) * sc;
         const sy = (cy + FRAME_THICK) * sc;
-        let sum = 0, cnt = 0;
+        let sum = 0, sumG = 0, cnt = 0;
         for (let yy = sy + m0; yy < sy + m1; yy++) {
           for (let xx = sx + m0; xx < sx + m1; xx++) {
             sum += wq.data[(yy * wq.width + xx) * 4];
+            sumG += wq.data[(yy * wq.width + xx) * 4 + 1];
             cnt++;
           }
         }
         warpRcam[cy * CAM_W + cx] = cnt > 0 ? sum / cnt : 0;
+        warpGcam[cy * CAM_W + cx] = cnt > 0 ? sumG / cnt : 0;
       }
     }
     // Image-derived warp-R centroids of confidently-labelled DG and LG.
@@ -1161,8 +1449,12 @@ export function quantize(
       const dgMeanB = dgBsum / dgN;
       const lgMeanB = lgBsum / lgN;
       // Only meaningful when the warp actually separates DG from LG in R and
-      // DG carries distinctly higher B than LG.
-      if (warpLgR - warpDgR > 40 && dgMeanB - lgMeanB > 20) {
+      // DG carries distinctly higher B than LG. (Guard was 40; lowered to 28
+      // after measuring that the blurrier thing-2/thing-3 photos sit at
+      // 31-35 warp-R separation with the recovery still fix-only there —
+      // the structural gates below carry the precision, the guard only
+      // rejects images where the warp genuinely doesn't separate the modes.)
+      if (warpLgR - warpDgR > 28 && dgMeanB - lgMeanB > 20) {
         // Warp-R cut at the midpoint of the DG/LG warp centroids = classify
         // by nearest warp centroid (the natural boundary in the clean
         // pre-correct space). BK-neighbour floor of 3 keeps false flips ~zero.
@@ -1190,10 +1482,246 @@ export function quantize(
             dotsFixed++;
           }
         }
+
+        // Second pass: two relaxed tiers for DG dots whose warp R sits just
+        // ABOVE the centroid midpoint (bleed lifts an isolated dot's warp R
+        // toward — but rarely past — the LG mode). Each tier trades a softer
+        // warp-R/B cut for a stricter structural gate, so flips still require
+        // several independent signatures at once:
+        //   T1: nearly enclosed by black (bk ≥ 6) — an LG pixel essentially
+        //       never sits fully inside a black region; warp R below 0.8 of
+        //       the DG→LG span and B above the LG mean confirm.
+        //   T2: on black (bk ≥ 4) with at most 1 DG neighbour (a true sparse
+        //       dot has black around it, not DG — LG pixels at DG-region
+        //       boundaries fail this) + warp R below 0.6 span + B clearly
+        //       DG-shifted.
+        // Measured on all 21 reference images (tier-1 normal + full +
+        // private): fixes 17 LG→DG errors, breaks 0.
+        // Neighbour counts come from a snapshot after the first pass so
+        // results don't depend on scan order.
+        {
+          const snap = finalLabels.slice();
+          const span = warpLgR - warpDgR;
+          const bSpan = dgMeanB - lgMeanB;
+          for (let cy = 0; cy < CAM_H; cy++) {
+            for (let cx = 0; cx < CAM_W; cx++) {
+              const i = cy * CAM_W + cx;
+              if (snap[i] !== 2) continue;
+              const f = (warpRcam[i] - warpDgR) / span;
+              if (f >= 0.8) continue;
+              // B must sit measurably above the LG mean (every verified DG
+              // dot is at ≥ 0.25 of the LG→DG B span; a bright-LG pixel with
+              // an artificially dark warp block sits at ≈ 0).
+              const bRel = (input.data[i * 4 + 2] - lgMeanB) / bSpan;
+              if (bRel <= 0.1) continue;
+              let bk = 0;
+              let dg = 0;
+              for (let dy = -1; dy <= 1; dy++) {
+                for (let dx = -1; dx <= 1; dx++) {
+                  if (!dx && !dy) continue;
+                  const yy = cy + dy, xx = cx + dx;
+                  if (yy < 0 || xx < 0 || yy >= CAM_H || xx >= CAM_W) continue;
+                  const l = snap[yy * CAM_W + xx];
+                  if (l === 0) bk++;
+                  else if (l === 1) dg++;
+                }
+              }
+              const t1 = bk >= 6;
+              const t2 = bk >= 4 && dg <= 1 && f < 0.6 && bRel > 0.1;
+              if (t1 || t2) {
+                finalLabels[i] = 1;
+                dotsFixed++;
+              }
+            }
+          }
+        }
       }
     }
     if (dbg && dotsFixed > 0) {
       dbg.log(`[quantize] warp-R DG-dot recovery: ${dotsFixed} pixels reclassified`);
+    }
+
+    // ── 3i. Recover BK pixels mislabelled DG using the pre-correct warp G.
+    // The same correct-gain amplification that lifts DG's R into LG also
+    // lifts a dim BK pixel's R/B into the DG range (worst in the dimmest
+    // screen corners), while its G stays at black level. The pre-correct
+    // warp G still separates BK (low G) from DG (mid G) decisively: across
+    // every reference image, true-DG pixels sit at warp-G fraction ≥ 0.74 of
+    // the BK→DG span (p1), while mislabelled-BK pixels sit at ≤ 0.50. Two
+    // signals must agree: warp-G fraction < 0.52 AND sample G below ~0.55 of
+    // the BK→DG sample-G span (guards interior dim-DG whose sample G is
+    // clearly DG-level). Measured on all 21 reference images: fixes 12,
+    // breaks 2 (both suspected reference errors in the same dither corner).
+    {
+      let bkW = 0, bkS = 0, bkN = 0, dgW = 0, dgS = 0, dgN2 = 0;
+      for (let i = 0; i < N; i++) {
+        if (finalLabels[i] === 0) {
+          bkW += warpGcam[i]; bkS += input.data[i * 4 + 1]; bkN++;
+        } else if (finalLabels[i] === 1) {
+          dgW += warpGcam[i]; dgS += input.data[i * 4 + 1]; dgN2++;
+        }
+      }
+      let bkFixed = 0;
+      if (bkN >= 20 && dgN2 >= 20) {
+        const wBK = bkW / bkN, wDG = dgW / dgN2;
+        const sBK = bkS / bkN, sDG = dgS / dgN2;
+        // Only meaningful when the warp actually separates BK from DG in G.
+        if (wDG - wBK > 40 && sDG - sBK > 40) {
+          const FG_CUT = 0.52;
+          const GREL_CUT = 0.55;
+          for (let i = 0; i < N; i++) {
+            if (finalLabels[i] !== 1) continue;
+            const fG = (warpGcam[i] - wBK) / (wDG - wBK);
+            if (fG >= FG_CUT) continue;
+            const gRel = (input.data[i * 4 + 1] - sBK) / (sDG - sBK);
+            if (gRel >= GREL_CUT) continue;
+            finalLabels[i] = 0;
+            bkFixed++;
+          }
+        }
+      }
+      if (dbg && bkFixed > 0) {
+        dbg.log(`[quantize] warp-G BK recovery: ${bkFixed} pixels reclassified DG → BK`);
+      }
+    }
+  }
+
+  // ── 3k. Vertical-rank LG/WH refinement for blur-smeared dither ──
+  // Heavy vertical blur smears a WH/LG dither into uniform columns: the
+  // absolute G of every pixel in the column lands in the mixed band between
+  // the classes, where no threshold — global or local-window — can separate
+  // them (the G-valley clamp firing above is the image-level signature of
+  // exactly this). But the blur only attenuates the alternation, it doesn't
+  // erase it: a true LG pixel still reads 15–25 G BELOW its vertical WH
+  // neighbours, riding whatever gradient the column has. So near the
+  // threshold, classify by local vertical ordering instead of absolute G: a
+  // warm pixel clearly below both warm vertical neighbours is LG, clearly
+  // above both is WH. Gated on the clamp having fired: on sharp images the
+  // threshold is already right and rank-flips near it only trade errors
+  // (measured fix 0 / break ~150 across all sharp references), while on the
+  // blurred d-1 this fixes 182 / breaks 21.
+  if (valleyClamped && valleyThreshold !== null) {
+    const BAND = 30; // only pixels this close to the threshold (the mixed band)
+    const MARGIN = 10; // must be clearly below/above both vertical neighbours
+    const snap = finalLabels.slice();
+    let rankFlipped = 0;
+    for (let y = 1; y < CAM_H - 1; y++) {
+      for (let x = 0; x < CAM_W; x++) {
+        const i = y * CAM_W + x;
+        const lbl = snap[i];
+        if (lbl !== 2 && lbl !== 3) continue;
+        const g = flatRG[i * 2 + 1];
+        if (Math.abs(g - valleyThreshold) >= BAND) continue;
+        const up = snap[i - CAM_W];
+        const dn = snap[i + CAM_W];
+        if ((up !== 2 && up !== 3) || (dn !== 2 && dn !== 3)) continue;
+        const gu = flatRG[(i - CAM_W) * 2 + 1];
+        const gd = flatRG[(i + CAM_W) * 2 + 1];
+        let want = lbl;
+        if (g <= Math.min(gu, gd) - MARGIN) want = 2;
+        else if (g >= Math.max(gu, gd) + MARGIN) want = 3;
+        if (want !== finalLabels[i]) {
+          finalLabels[i] = want;
+          rankFlipped++;
+        }
+      }
+    }
+    if (dbg && rankFlipped > 0) {
+      dbg.log(
+        `[quantize] vertical-rank LG/WH (blur-smeared dither): ${rankFlipped} pixels reclassified`,
+      );
+    }
+
+    // Same physics on the DG/LG boundary, which separates on R instead of G.
+    // Weaker alternation survives there, so a third signal is required: the
+    // pixel's B must agree with the target class (DG is blue, B above the
+    // DG/LG mean-B midpoint; LG is warm, below). Measured on d-1:
+    // fix 23 / break 0; the un-gated version breaks 17+.
+    {
+      const R_BAND = 25;
+      // Margin re-tuned after the row-phase retry landed: on row-phase-
+      // corrected samples the DG/LG rank is break-free down to margin 4
+      // (the B gate carries the precision); 6 keeps headroom.
+      const R_MARGIN = 6;
+      const dgRC = globalCentersPO[1 * 2];
+      const lgRC = globalCentersPO[2 * 2];
+      const rMid = (dgRC + lgRC) / 2;
+      let dgBsum = 0, dgN = 0, lgBsum = 0, lgN = 0;
+      for (let i = 0; i < N; i++) {
+        if (finalLabels[i] === 1) { dgBsum += input.data[i * 4 + 2]; dgN++; }
+        else if (finalLabels[i] === 2) { lgBsum += input.data[i * 4 + 2]; lgN++; }
+      }
+      if (dgN >= 50 && lgN >= 50) {
+        const bMid = (dgBsum / dgN + lgBsum / lgN) / 2;
+        const snap = finalLabels.slice();
+        let rankFlippedDG = 0;
+        for (let y = 1; y < CAM_H - 1; y++) {
+          for (let x = 0; x < CAM_W; x++) {
+            const i = y * CAM_W + x;
+            const lbl = snap[i];
+            if (lbl !== 1 && lbl !== 2) continue;
+            const r = flatRG[i * 2];
+            if (Math.abs(r - rMid) >= R_BAND) continue;
+            const up = snap[i - CAM_W];
+            const dn = snap[i + CAM_W];
+            if ((up !== 1 && up !== 2) || (dn !== 1 && dn !== 2)) continue;
+            const ru = flatRG[(i - CAM_W) * 2];
+            const rd = flatRG[(i + CAM_W) * 2];
+            const b = input.data[i * 4 + 2];
+            let want = lbl;
+            if (r <= Math.min(ru, rd) - R_MARGIN && b > bMid) want = 1;
+            else if (r >= Math.max(ru, rd) + R_MARGIN && b < bMid) want = 2;
+            if (want !== finalLabels[i]) {
+              finalLabels[i] = want;
+              rankFlippedDG++;
+            }
+          }
+        }
+        if (dbg && rankFlippedDG > 0) {
+          dbg.log(
+            `[quantize] vertical-rank DG/LG (blur-smeared dither): ${rankFlippedDG} pixels reclassified`,
+          );
+        }
+      }
+    }
+  }
+
+  // ── 3j. Per-pixel recovery for colours dropped by cluster validation ──
+  // Dropping a colour's CLUSTER (because it migrated into another colour's
+  // cloud) must never make individual pixels of that colour unreachable: an
+  // image can legitimately contain just a handful of them — too few to
+  // anchor a cluster, still real content. Any pixel whose own RG value is
+  // nearest the dropped colour's palette target gets that label back. By
+  // construction this is a tiny set (if many pixels sat near the target,
+  // the cluster would not have migrated and the colour would not have been
+  // dropped). DG is excluded: its target sits between BK and LG so
+  // nearest-target is not decisive for it — blueness (step 2b) is its
+  // per-pixel recovery instead.
+  for (const p of [0, 2, 3]) {
+    if (presentPalette.includes(p)) continue;
+    let recovered = 0;
+    for (let i = 0; i < N; i++) {
+      const r = flatRG[i * 2];
+      const g = flatRG[i * 2 + 1];
+      let best = 0;
+      let bestD = Infinity;
+      for (let t = 0; t < 4; t++) {
+        const d = (r - targetsRG[t][0]) ** 2 + (g - targetsRG[t][1]) ** 2;
+        if (d < bestD) {
+          bestD = d;
+          best = t;
+        }
+      }
+      if (best === p && finalLabels[i] !== p) {
+        finalLabels[i] = p;
+        recovered++;
+      }
+    }
+    if (dbg && recovered > 0) {
+      dbg.log(
+        `[quantize] dropped-colour recovery: ${recovered} px nearest the ` +
+          `${["BK", "DG", "LG", "WH"][p]} target relabelled ${["BK", "DG", "LG", "WH"][p]}`,
+      );
     }
   }
 

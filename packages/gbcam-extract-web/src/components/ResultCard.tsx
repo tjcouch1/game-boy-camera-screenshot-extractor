@@ -22,6 +22,10 @@ import {
 import { toast } from "sonner";
 import { X, Download, Share2, Copy as CopyIcon } from "lucide-react";
 import { FramePicker } from "./FramePicker.js";
+import {
+  ProcessingIssuesAlert,
+  ProcessingIssuesIcon,
+} from "./ProcessingIssuesWarning.js";
 import type { FrameSelection } from "../types/frame-selection.js";
 import { buildOutputCanvas } from "../utils/buildOutputCanvas.js";
 
@@ -57,6 +61,10 @@ interface ResultCardProps {
   onAddOriginalFrames?: (frames: Frame[]) => { added: number };
   /** Delete a user frame; threaded through to the FramePicker. */
   onDeleteUserFrame?: (id: string) => void;
+  /** Whether the processing-quality warning is collapsed (persisted). */
+  warningCollapsed?: boolean;
+  /** Persist a change to the warning's collapsed state. */
+  onWarningCollapsedChange?: (collapsed: boolean) => void;
   onDelete?: () => void;
 }
 
@@ -79,10 +87,14 @@ export function ResultCard({
   onAddUserFrames,
   onAddOriginalFrames,
   onDeleteUserFrame,
+  warningCollapsed = false,
+  onWarningCollapsedChange,
   onDelete,
 }: ResultCardProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [shareSupported, setShareSupported] = useState(false);
+  const hasIssues = !!result.issues?.length;
+  const warningOpen = !warningCollapsed;
 
   useEffect(() => {
     setShareSupported(canShare());
@@ -202,14 +214,22 @@ export function ResultCard({
           </CardAction>
         )}
       </CardHeader>
+      {hasIssues && warningOpen && (
+        <div className="mb-3">
+          <ProcessingIssuesAlert
+            issues={result.issues!}
+            onCollapse={() => onWarningCollapsedChange?.(true)}
+          />
+        </div>
+      )}
       <CardContent className="flex flex-col sm:flex-row gap-3 p-0">
         <canvas
           ref={canvasRef}
           className="rounded border self-start"
           style={{ imageRendering: "pixelated", maxWidth: "100%" }}
         />
-        <div className="flex flex-col gap-2 items-start">
-          <div className="flex flex-wrap gap-2 items-start content-start">
+        <div className="flex flex-col gap-2 items-start flex-1">
+          <div className="flex flex-wrap gap-2 items-start content-start w-full">
             <Button onClick={handleDownload}>
               <Download data-icon="inline-start" />
               Download PNG
@@ -224,6 +244,12 @@ export function ResultCard({
               <CopyIcon data-icon="inline-start" />
               Copy
             </Button>
+            {hasIssues && !warningOpen && (
+              <ProcessingIssuesIcon
+                onExpand={() => onWarningCollapsedChange?.(false)}
+                className="ms-auto"
+              />
+            )}
           </div>
           <FramePicker
             value={frameOverride}
