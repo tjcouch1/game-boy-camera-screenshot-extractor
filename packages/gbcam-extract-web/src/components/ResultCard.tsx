@@ -22,7 +22,10 @@ import {
 import { toast } from "sonner";
 import { X, Download, Share2, Copy as CopyIcon } from "lucide-react";
 import { FramePicker } from "./FramePicker.js";
-import { ProcessingIssuesWarning } from "./ProcessingIssuesWarning.js";
+import {
+  ProcessingIssuesAlert,
+  ProcessingIssuesIcon,
+} from "./ProcessingIssuesWarning.js";
 import type { FrameSelection } from "../types/frame-selection.js";
 import { buildOutputCanvas } from "../utils/buildOutputCanvas.js";
 
@@ -84,6 +87,8 @@ export function ResultCard({
 }: ResultCardProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [shareSupported, setShareSupported] = useState(false);
+  const hasIssues = !!result.issues?.length;
+  const [warningOpen, setWarningOpen] = useState(true);
 
   useEffect(() => {
     setShareSupported(canShare());
@@ -203,9 +208,12 @@ export function ResultCard({
           </CardAction>
         )}
       </CardHeader>
-      {result.issues && result.issues.length > 0 && (
+      {hasIssues && warningOpen && (
         <div className="mb-3">
-          <ProcessingIssuesWarning issues={result.issues} />
+          <ProcessingIssuesAlert
+            issues={result.issues!}
+            onCollapse={() => setWarningOpen(false)}
+          />
         </div>
       )}
       <CardContent className="flex flex-col sm:flex-row gap-3 p-0">
@@ -214,8 +222,8 @@ export function ResultCard({
           className="rounded border self-start"
           style={{ imageRendering: "pixelated", maxWidth: "100%" }}
         />
-        <div className="flex flex-col gap-2 items-start">
-          <div className="flex flex-wrap gap-2 items-start content-start">
+        <div className="flex flex-col gap-2 items-start flex-1">
+          <div className="flex flex-wrap gap-2 items-start content-start w-full">
             <Button onClick={handleDownload}>
               <Download data-icon="inline-start" />
               Download PNG
@@ -230,6 +238,12 @@ export function ResultCard({
               <CopyIcon data-icon="inline-start" />
               Copy
             </Button>
+            {hasIssues && !warningOpen && (
+              <ProcessingIssuesIcon
+                onExpand={() => setWarningOpen(true)}
+                className="ms-auto"
+              />
+            )}
           </div>
           <FramePicker
             value={frameOverride}

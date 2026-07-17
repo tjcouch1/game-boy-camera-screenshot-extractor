@@ -1,4 +1,3 @@
-import { useState } from "react";
 import type { PipelineIssue } from "gbcam-extract";
 import { TriangleAlert, ChevronUp } from "lucide-react";
 import {
@@ -8,6 +7,7 @@ import {
   AlertTitle,
 } from "@/shadcn/components/alert";
 import { Button } from "@/shadcn/components/button";
+import { cn } from "@/shadcn/utils/utils";
 
 /** Join reason phrases into natural English: "a", "a and b", "a, b, and c". */
 function formatReasons(reasons: string[]): string {
@@ -17,34 +17,17 @@ function formatReasons(reasons: string[]): string {
 }
 
 /**
- * Collapsible warning about processing-quality issues detected by the
- * pipeline. Expanded by default when issues exist; collapses to a single
- * warning-icon button so it takes almost no room once acknowledged.
- * Renders nothing when there are no issues.
+ * Expanded warning about processing-quality issues detected by the pipeline.
+ * The collapse control hands visibility back to the parent, which renders
+ * {@link ProcessingIssuesIcon} in its place.
  */
-export function ProcessingIssuesWarning({
+export function ProcessingIssuesAlert({
   issues,
+  onCollapse,
 }: {
-  issues?: PipelineIssue[];
+  issues: PipelineIssue[];
+  onCollapse: () => void;
 }) {
-  const [open, setOpen] = useState(true);
-  if (!issues?.length) return null;
-
-  if (!open) {
-    return (
-      <Button
-        variant="ghost"
-        size="icon"
-        aria-label="Show processing quality warning"
-        title="Possible processing quality issues"
-        onClick={() => setOpen(true)}
-        className="size-7 text-destructive"
-      >
-        <TriangleAlert />
-      </Button>
-    );
-  }
-
   return (
     <Alert>
       <TriangleAlert />
@@ -59,12 +42,37 @@ export function ProcessingIssuesWarning({
           variant="ghost"
           size="icon"
           aria-label="Collapse processing quality warning"
-          onClick={() => setOpen(false)}
+          onClick={onCollapse}
           className="size-6"
         >
           <ChevronUp />
         </Button>
       </AlertAction>
     </Alert>
+  );
+}
+
+/**
+ * Collapsed form of the processing-quality warning: a single warning-icon
+ * button that re-expands the alert.
+ */
+export function ProcessingIssuesIcon({
+  onExpand,
+  className,
+}: {
+  onExpand: () => void;
+  className?: string;
+}) {
+  return (
+    <Button
+      variant="ghost"
+      size="icon"
+      aria-label="Show processing quality warning"
+      title="Possible processing quality issues"
+      onClick={onExpand}
+      className={cn("size-7 text-destructive", className)}
+    >
+      <TriangleAlert />
+    </Button>
   );
 }
