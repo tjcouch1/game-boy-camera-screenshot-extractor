@@ -142,6 +142,7 @@ export default function App() {
     updateSettings: updateHistorySettings,
     settings: historySettings,
     updateFrameOverride: updateHistoryFrameOverride,
+    updateWarningCollapsed: updateHistoryWarningCollapsed,
     purgeFrameOverride: purgeHistoryFrameOverride,
   } = useImageHistory();
   const { settings, updateSetting } = useAppSettings();
@@ -191,6 +192,14 @@ export default function App() {
     setCurrentResults((prev) =>
       prev.map((r) =>
         r.filename === filename ? { ...r, frameOverride: next } : r,
+      ),
+    );
+  }
+
+  function setResultWarningCollapsed(filename: string, collapsed: boolean) {
+    setCurrentResults((prev) =>
+      prev.map((r) =>
+        r.filename === filename ? { ...r, warningCollapsed: collapsed } : r,
       ),
     );
   }
@@ -595,6 +604,10 @@ export default function App() {
                         onAddUserFrames={catalog.addUserFrames}
                         onAddOriginalFrames={catalog.addOriginalFrames}
                         onDeleteUserFrame={handleDeleteUserFrame}
+                        warningCollapsed={r.warningCollapsed ?? false}
+                        onWarningCollapsedChange={(collapsed) =>
+                          setResultWarningCollapsed(r.filename, collapsed)
+                        }
                         onDelete={() => handleDeleteResult(r.filename)}
                       />
                       {(r.result.intermediates || r.result.debug) && (
@@ -733,6 +746,14 @@ export default function App() {
                                 onAddUserFrames={catalog.addUserFrames}
                                 onAddOriginalFrames={catalog.addOriginalFrames}
                                 onDeleteUserFrame={handleDeleteUserFrame}
+                                warningCollapsed={result.warningCollapsed ?? false}
+                                onWarningCollapsedChange={(collapsed) =>
+                                  updateHistoryWarningCollapsed(
+                                    batch.id,
+                                    idx,
+                                    collapsed,
+                                  )
+                                }
                                 onDelete={() =>
                                   deleteFromHistory(batch.id, idx)
                                 }

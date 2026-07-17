@@ -220,6 +220,24 @@ export function useImageHistory() {
     [],
   );
 
+  const updateWarningCollapsed = useCallback(
+    (batchId: string, resultIndex: number, collapsed: boolean) => {
+      setHistory((prev) =>
+        prev.map((batch) =>
+          batch.id === batchId
+            ? {
+                ...batch,
+                results: batch.results.map((r, i) =>
+                  i === resultIndex ? { ...r, warningCollapsed: collapsed } : r,
+                ),
+              }
+            : batch,
+        ),
+      );
+    },
+    [],
+  );
+
   /**
    * Reset any history result whose frameOverride points to `frameId` back to
    * `{kind: "default"}` so it follows the global default. Called when a user
@@ -250,6 +268,7 @@ export function useImageHistory() {
     updateSettings,
     pruneHistory,
     updateFrameOverride,
+    updateWarningCollapsed,
     purgeFrameOverride,
   };
 }

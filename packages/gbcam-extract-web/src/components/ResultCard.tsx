@@ -61,6 +61,10 @@ interface ResultCardProps {
   onAddOriginalFrames?: (frames: Frame[]) => { added: number };
   /** Delete a user frame; threaded through to the FramePicker. */
   onDeleteUserFrame?: (id: string) => void;
+  /** Whether the processing-quality warning is collapsed (persisted). */
+  warningCollapsed?: boolean;
+  /** Persist a change to the warning's collapsed state. */
+  onWarningCollapsedChange?: (collapsed: boolean) => void;
   onDelete?: () => void;
 }
 
@@ -83,12 +87,14 @@ export function ResultCard({
   onAddUserFrames,
   onAddOriginalFrames,
   onDeleteUserFrame,
+  warningCollapsed = false,
+  onWarningCollapsedChange,
   onDelete,
 }: ResultCardProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [shareSupported, setShareSupported] = useState(false);
   const hasIssues = !!result.issues?.length;
-  const [warningOpen, setWarningOpen] = useState(true);
+  const warningOpen = !warningCollapsed;
 
   useEffect(() => {
     setShareSupported(canShare());
@@ -212,7 +218,7 @@ export function ResultCard({
         <div className="mb-3">
           <ProcessingIssuesAlert
             issues={result.issues!}
-            onCollapse={() => setWarningOpen(false)}
+            onCollapse={() => onWarningCollapsedChange?.(true)}
           />
         </div>
       )}
@@ -240,7 +246,7 @@ export function ResultCard({
             </Button>
             {hasIssues && !warningOpen && (
               <ProcessingIssuesIcon
-                onExpand={() => setWarningOpen(true)}
+                onExpand={() => onWarningCollapsedChange?.(false)}
                 className="ms-auto"
               />
             )}

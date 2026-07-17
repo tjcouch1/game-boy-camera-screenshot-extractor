@@ -16,6 +16,12 @@ export interface ProcessingResult {
   processingTime: number;
   /** Per-image frame override. Undefined = follow global default. */
   frameOverride?: FrameSelection;
+  /**
+   * Whether the user collapsed this result's processing-quality warning.
+   * Persisted with the result (both current results and history) so the
+   * warning stays collapsed across page reloads.
+   */
+  warningCollapsed?: boolean;
 }
 
 export interface CurrentImageProgress {
